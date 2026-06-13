@@ -60,6 +60,7 @@ class CDPCapture:
         self.target_id_to_session: dict[str, str] = {}
         self.pending_command_methods: dict[int, str] = {}
         self.pending_body_requests: dict[int, tuple[str, str]] = {}
+        self.pending_post_data_requests: dict[int, tuple[str, str]] = {}
         self._dedupe_keys: set[str] = set()
         self._stop = False
         self._last_flush = time.time()
@@ -187,10 +188,23 @@ class CDPCapture:
         if self.config.cookie_export:
             self._schedule_storage_export(session_id, url)
 
+    @staticmethod
+    def _site_root(domain: str) -> str:
+        parts = domain.split(".")
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+        return domain
+
     def _should_save_network_for_domain(self, domain: str) -> bool:
         if not self.primary_sites:
             return True
-        return domain in self.primary_sites
+        if domain in self.primary_sites:
+            return True
+        root = self._site_root(domain)
+        for primary in self.primary_sites:
+            if self._site_root(primary) == root:
+                return True
+        return False
 
     def _cookie_dedupe_key(self, event: CookieEvent) -> str:
         names = tuple(sorted(str(item.get("name", "")) for item in event.cookies))
@@ -284,6 +298,8 @@ class CDPCapture:
         }
         if state.get("post_data"):
             request_payload["postData"] = state["post_data"]
+        if state.get("resource_type"):
+            request_payload["resourceType"] = state["resource_type"]
         if cookie_header:
             cookies, _ = parse_cookie_header(cookie_header)
             request_payload["cookies"] = cookies
@@ -313,7 +329,56 @@ class CDPCapture:
         log_save(
             f"NET {record.method:<6} {record.response.get('status')} "
             f"{record.domain} {url[:80]}"
+            + (f" post={len(state.get('post_data') or '')}b" if state.get("post_data") else "")
         )
+
+    def _fetch_request_post_data(
+        self,
+        ws: Any,
+        key: tuple[str, str],
+        *,
+        session_id: str,
+        request_id: str,
+    ) -> None:
+        state = self.pending_by_key.get(key, {})
+        if state.get("post_data") or state.get("post_data_requested"):
+            return
+        state["post_data_requested"] = True
+        state["waiting_post_data"] = True
+        msg_id = self._send(
+            ws,
+            "Network.getRequestPostData",
+            {"requestId": request_id},
+            session_id=session_id,
+        )
+        self.pending_post_data_requests[msg_id] = key
+
+    def _finalize_full_network_record(self, key: tuple[str, str], body: str | None) -> None:
+        state = self.pending_by_key.get(key, {})
+        if state.get("full_record_saved"):
+            return
+        if state.get("waiting_post_data"):
+            state["pending_body"] = body
+            return
+        self._write_full_network_record(key, body)
+
+    def _on_full_network_response(self, ws: Any, key: tuple[str, str], session_id: str) -> None:
+        state = self.pending_by_key.get(key, {})
+        if not state or state.get("full_record_saved"):
+            return
+        state["response_received"] = True
+        method = (state.get("method") or "GET").upper()
+        request_id = key[1]
+        if method != "GET":
+            if state.get("has_post_data") and not state.get("post_data"):
+                self._fetch_request_post_data(
+                    ws,
+                    key,
+                    session_id=session_id,
+                    request_id=request_id,
+                )
+            else:
+                self._finalize_full_network_record(key, None)
 
     def _try_process_request(self, key: tuple[str, str]) -> None:
         state = self.pending_by_key.get(key)
@@ -366,7 +431,7 @@ class CDPCapture:
                 self.target_id_to_session[target_id] = sid
             self._send(ws, "Network.enable", session_id=sid)
             if target_type == "page":
-                if self.config.cookie_export:
+                if self.config.cookie_export or self.config.full_network:
                     self._send(ws, "Page.enable", session_id=sid)
                 self._register_primary_site(sid, target_url)
             log_info(f"Attached: {target_type} {target_url[:100]}")
@@ -419,15 +484,26 @@ class CDPCapture:
                 self._register_primary_site(session_id, url)
             key = (session_id, request_id)
             prev = self.pending_by_key.get(key, {})
+            post_data = request.get("postData")
+            has_post_data = bool(request.get("hasPostData"))
             self.pending_by_key[key] = {
                 "method": request.get("method"),
                 "url": url,
                 "headers": request.get("headers", {}) or {},
                 "extra_headers": prev.get("extra_headers"),
-                "post_data": request.get("postData"),
+                "post_data": post_data,
+                "has_post_data": has_post_data,
+                "resource_type": params.get("type"),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "processed": False,
             }
+            if self.config.full_network and has_post_data and not post_data:
+                self._fetch_request_post_data(
+                    ws,
+                    key,
+                    session_id=session_id,
+                    request_id=request_id,
+                )
             if request.get("headers"):
                 self._try_process_request(key)
             return
@@ -459,6 +535,7 @@ class CDPCapture:
             if self.config.cookie_export:
                 return
             if self.config.full_network:
+                self._on_full_network_response(ws, key, session_id)
                 return
             state = self.pending_by_key.get(key, {})
             meta = self.response_meta.get(key, {})
@@ -510,6 +587,11 @@ class CDPCapture:
             if not request_id:
                 return
             key = (session_id, request_id)
+            state = self.pending_by_key.get(key, {})
+            if state.get("full_record_saved"):
+                return
+            if (state.get("method") or "GET").upper() != "GET":
+                return
             msg_id = self._send(
                 ws,
                 "Network.getResponseBody",
@@ -517,6 +599,19 @@ class CDPCapture:
                 session_id=session_id,
             )
             self.pending_body_requests[msg_id] = key
+            return
+
+        if method == "Network.loadingFailed" and self.config.full_network:
+            request_id = params.get("requestId", "")
+            if not request_id:
+                return
+            key = (session_id, request_id)
+            state = self.pending_by_key.get(key, {})
+            if state.get("full_record_saved"):
+                return
+            self.response_meta.setdefault(key, {})
+            self.response_meta[key].setdefault("status", 0)
+            self._on_full_network_response(ws, key, session_id)
             return
 
     def _handle_command_response(self, ws: Any, message: dict[str, Any]) -> None:
@@ -529,7 +624,7 @@ class CDPCapture:
             if not key:
                 return
             if message.get("error"):
-                self._write_full_network_record(key, None)
+                self._finalize_full_network_record(key, None)
                 return
             result = message.get("result", {})
             body = result.get("body")
@@ -538,7 +633,21 @@ class CDPCapture:
                     body = base64.b64decode(body).decode("utf-8", errors="replace")
                 except Exception:
                     body = str(body)
-            self._write_full_network_record(key, body)
+            self._finalize_full_network_record(key, body)
+        elif cmd == "Network.getRequestPostData":
+            key = self.pending_post_data_requests.pop(msg_id, None)
+            if not key:
+                return
+            state = self.pending_by_key.get(key, {})
+            if message.get("error"):
+                state["waiting_post_data"] = False
+                if state.get("response_received"):
+                    self._finalize_full_network_record(key, state.pop("pending_body", None))
+                return
+            state["post_data"] = message.get("result", {}).get("postData", "")
+            state["waiting_post_data"] = False
+            if state.get("response_received"):
+                self._finalize_full_network_record(key, state.pop("pending_body", None))
         elif cmd == "Storage.getCookies":
             self.session.cookie_jar_snapshot = message.get("result", {}).get("cookies", [])
         elif cmd == "Target.getTargets":
@@ -881,8 +990,9 @@ class CDPCapture:
             )
         else:
             log_info(
-                "Har API request save: method, URL, headers, postData, cookies, response status/body."
+                "Har API request save: GET/POST/PUT + headers, postData, response status/body."
             )
+            log_info("POST/XHR turant responseReceived par save; GET body loadingFinished par.")
             log_info("Output: per-site network.ndjson (Ctrl+C se band karo).")
 
         try:
