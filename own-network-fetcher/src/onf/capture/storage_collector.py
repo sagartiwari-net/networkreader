@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -89,28 +90,25 @@ def origin_of(url: str) -> str | None:
 class StorageCollector:
     """Sync CDP helper used during session finalize."""
 
-    def __init__(self, ws: Any, send: Any, next_id_ref: list[int]) -> None:
+    def __init__(
+        self,
+        ws: Any,
+        send: Callable[..., int],
+        *,
+        timeout_s: float = 15.0,
+    ) -> None:
         self.ws = ws
         self._send = send
-        self._next_id = next_id_ref
-        self._pending: dict[int, str] = {}
+        self._timeout_s = timeout_s
 
-    def _next_message_id(self) -> int:
-        msg_id = self._next_id[0]
-        self._next_id[0] += 1
-        return msg_id
-
-    def _command(self, method: str, params: dict[str, Any] | None = None, session_id: str | None = None) -> dict[str, Any]:
-        msg_id = self._next_message_id()
-        message: dict[str, Any] = {"id": msg_id, "method": method}
-        if params is not None:
-            message["params"] = params
-        if session_id:
-            message["sessionId"] = session_id
-        self._pending[msg_id] = method
-        self.ws.send(json.dumps(message))
-
-        deadline = time.time() + 8.0
+    def _command(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        msg_id = self._send(self.ws, method, params, session_id=session_id)
+        deadline = time.time() + self._timeout_s
         while time.time() < deadline:
             self.ws.settimeout(1.0)
             try:
@@ -124,8 +122,6 @@ class StorageCollector:
                 if payload.get("error"):
                     raise RuntimeError(f"{method} failed: {payload['error']}")
                 return payload.get("result", {})
-            if payload.get("id") in self._pending:
-                self._pending.pop(payload["id"], None)
         raise TimeoutError(f"CDP command timed out: {method}")
 
     def get_cookies(self) -> list[dict[str, Any]]:

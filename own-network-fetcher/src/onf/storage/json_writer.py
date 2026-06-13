@@ -66,10 +66,19 @@ class SessionWriter:
         indexed_db: dict[str, Any],
     ) -> list[Path]:
         written: list[Path] = []
+        self.site_dir(domain)
 
         http_payload = build_http_cookie_payload(referer, http_cookies)
         if http_payload.get("cookies"):
             written.append(self.write_site_json(domain, "cookies.http.json", http_payload))
+        else:
+            written.append(
+                self.write_site_json(
+                    domain,
+                    "cookies.http.json",
+                    {"referer": referer, "includedFormats": ["cookies"], "cookies": []},
+                )
+            )
 
         if local_storage:
             written.append(
@@ -105,8 +114,9 @@ class SessionWriter:
             session_storage=session_storage or None,
             indexed_db=indexed_db or None,
         )
-        if all_payload.get("includedFormats"):
-            written.append(self.write_site_json(domain, "cookies.all.json", all_payload))
+        if not all_payload.get("includedFormats"):
+            all_payload = {"referer": referer, "includedFormats": ["cookies"], "cookies": []}
+        written.append(self.write_site_json(domain, "cookies.all.json", all_payload))
 
         return written
 

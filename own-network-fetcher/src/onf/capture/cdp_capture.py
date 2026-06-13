@@ -53,6 +53,8 @@ class CDPCapture:
         self.attached_target_ids: set[str] = set()
         self.attached_sessions: set[str] = set()
         self.page_sessions: dict[str, str] = {}
+        self.primary_sites: dict[str, str] = {}
+        self.page_session_by_domain: dict[str, str] = {}
         self.pending_command_methods: dict[int, str] = {}
         self.pending_body_requests: dict[int, tuple[str, str]] = {}
         self._dedupe_keys: set[str] = set()
@@ -89,6 +91,30 @@ class CDPCapture:
                 else:
                     clean[str(name)] = str(value)
         return clean
+
+    @staticmethod
+    def _is_valid_site_url(url: str) -> bool:
+        if not url.startswith(("http://", "https://")):
+            return False
+        domain = safe_domain(url)
+        return domain not in {"127.0.0.1", "localhost", "unknown"}
+
+    def _register_primary_site(self, session_id: str, url: str) -> None:
+        if not self._is_valid_site_url(url):
+            return
+        domain = safe_domain(url)
+        self.page_sessions[session_id] = url
+        self.page_session_by_domain[domain] = session_id
+        is_new = domain not in self.primary_sites
+        self.primary_sites[domain] = url
+        if is_new:
+            folder = self.writer.site_dir(domain)
+            log_info(f"Site folder ready: {folder}")
+
+    def _should_save_network_for_domain(self, domain: str) -> bool:
+        if not self.primary_sites:
+            return True
+        return domain in self.primary_sites
 
     def _cookie_dedupe_key(self, event: CookieEvent) -> str:
         names = tuple(sorted(str(item.get("name", "")) for item in event.cookies))
@@ -162,6 +188,10 @@ class CDPCapture:
         if not url.startswith(("http://", "https://")):
             return
         if state.get("full_record_saved"):
+            return
+        domain = safe_domain(url)
+        if not self._should_save_network_for_domain(domain):
+            state["full_record_saved"] = True
             return
 
         headers = state.get("extra_headers") or state.get("headers") or {}
@@ -248,10 +278,21 @@ class CDPCapture:
             self.attached_sessions.add(sid)
             if target_id:
                 self.attached_target_ids.add(target_id)
-            self.page_sessions[sid] = target_url
             self._send(ws, "Network.enable", session_id=sid)
             self._send(ws, "Runtime.enable", session_id=sid)
+            if target_type == "page":
+                self._send(ws, "Page.enable", session_id=sid)
+                self._register_primary_site(sid, target_url)
             log_info(f"Attached: {target_type} {target_url[:100]}")
+            return
+
+        if method == "Page.frameNavigated":
+            frame = params.get("frame", {})
+            if frame.get("parentId"):
+                return
+            url = frame.get("url", "")
+            if session_id and url:
+                self._register_primary_site(session_id, url)
             return
 
         if method == "Network.requestWillBeSent":
@@ -379,31 +420,25 @@ class CDPCapture:
             self.session.cookie_jar_snapshot = message.get("result", {}).get("cookies", [])
 
     def _export_cookie_bundles(self, ws: Any) -> None:
-        collector = StorageCollector(ws, self._send, [self.next_id])
+        collector = StorageCollector(ws, self._send)
         try:
             all_cookies = collector.get_cookies()
         except Exception as exc:
-            log_skip(f"Cookie export skipped: {exc}")
-            return
+            log_skip(f"Cookie jar read failed: {exc}")
+            all_cookies = []
 
         self.session.cookie_jar_snapshot = all_cookies
-        referers: dict[str, str] = {}
-        session_for_domain: dict[str, str] = {}
-
-        for sid, url in self.page_sessions.items():
-            if not url.startswith(("http://", "https://")):
-                continue
-            domain = safe_domain(url)
-            if domain in {"127.0.0.1", "localhost", "unknown"}:
-                continue
-            referers[domain] = url
-            session_for_domain[domain] = sid
-
+        referers = dict(self.primary_sites)
         if not referers:
             for event in self.session.cookie_events:
-                if event.domain in {"127.0.0.1", "localhost", "unknown"}:
+                if not self._is_valid_site_url(event.url):
                     continue
-                referers.setdefault(event.domain, event.url)
+                domain = safe_domain(event.url)
+                referers.setdefault(domain, event.url)
+
+        if not referers:
+            log_skip("No website tab detected — koi site folder nahi bana.")
+            return
 
         site_count = 0
         file_count = 0
@@ -411,7 +446,7 @@ class CDPCapture:
             local_storage: dict[str, str] = {}
             session_storage: dict[str, str] = {}
             indexed_db: dict[str, Any] = {}
-            sid = session_for_domain.get(domain)
+            sid = self.page_session_by_domain.get(domain)
             if sid:
                 try:
                     local_storage, session_storage = collector.collect_dom_storage(sid)
@@ -430,8 +465,6 @@ class CDPCapture:
                 session_storage=session_storage,
                 indexed_db=indexed_db,
             )
-            if not paths:
-                continue
             site_count += 1
             file_count += len(paths)
             site_folder = self.writer.site_dir(domain)
