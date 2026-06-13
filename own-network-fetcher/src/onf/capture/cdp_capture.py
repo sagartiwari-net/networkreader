@@ -299,6 +299,8 @@ class CDPCapture:
                 "headers": response.get("headers", {}) or {},
                 "mimeType": response.get("mimeType"),
             }
+            if self.config.cookie_export:
+                return
             if self.config.full_network:
                 return
             state = self.pending_by_key.get(key, {})
