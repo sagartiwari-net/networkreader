@@ -27,20 +27,23 @@ STORAGE_EVAL_JS = """
 })()
 """
 
-INDEXED_DB_DUMP_JS = """
+INDEXED_DB_PROBE_JS = """
 (async () => {
-  const result = {};
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   try {
-    let dbList = [];
-    if (typeof indexedDB.databases === "function") {
-      dbList = await indexedDB.databases();
-    }
-    if (!dbList.length) {
-      return result;
-    }
-    for (const meta of dbList) {
-      const dbName = meta && meta.name;
+    if (typeof indexedDB.databases !== "function") return [];
+    const dbList = await indexedDB.databases();
+    return (dbList || []).map((d) => d && d.name).filter(Boolean);
+  } catch (e) {
+    return [];
+  }
+})()
+"""
+
+INDEXED_DB_DUMP_JS = """
+(async (names) => {
+  const result = {};
+  try {
+    for (const dbName of names) {
       if (!dbName) continue;
       await new Promise((resolve) => {
         const request = indexedDB.open(dbName);
@@ -85,13 +88,10 @@ INDEXED_DB_DUMP_JS = """
           }
         };
       });
-      await sleep(0);
     }
-  } catch (e) {
-    result.__error = String(e && e.message ? e.message : e);
-  }
+  } catch (e) {}
   return result;
-})()
+})
 """
 
 
@@ -108,7 +108,7 @@ def security_origin(url: str) -> str | None:
 
 
 class StorageCollector:
-    """Sync CDP helper — prefers DOMStorage over Runtime during live capture."""
+    """Sync CDP helper — forwards unrelated events while waiting for responses."""
 
     def __init__(
         self,
@@ -116,10 +116,12 @@ class StorageCollector:
         send: Callable[..., int],
         *,
         timeout_s: float = 15.0,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.ws = ws
         self._send = send
         self._timeout_s = timeout_s
+        self._on_event = on_event
         self._dom_storage_enabled: set[str] = set()
         self._runtime_enabled: set[str] = set()
 
@@ -149,6 +151,9 @@ class StorageCollector:
             if not raw:
                 continue
             payload = json.loads(raw)
+            if payload.get("method") and self._on_event:
+                self._on_event(payload)
+                continue
             result = self._drain_event(payload, msg_id)
             if result is not None:
                 return result
@@ -157,14 +162,14 @@ class StorageCollector:
     def _ensure_runtime(self, session_id: str) -> None:
         if session_id in self._runtime_enabled:
             return
-        self._command("Runtime.enable", session_id=session_id)
+        self._command("Runtime.enable", session_id=session_id, timeout_s=5.0)
         self._runtime_enabled.add(session_id)
 
     def _disable_runtime(self, session_id: str) -> None:
         if session_id not in self._runtime_enabled:
             return
         try:
-            self._command("Runtime.disable", session_id=session_id, timeout_s=5.0)
+            self._command("Runtime.disable", session_id=session_id, timeout_s=3.0)
         except Exception:
             pass
         self._runtime_enabled.discard(session_id)
@@ -172,7 +177,7 @@ class StorageCollector:
     def get_cookies(self) -> list[dict[str, Any]]:
         for method in ("Storage.getCookies", "Network.getAllCookies"):
             try:
-                result = self._command(method)
+                result = self._command(method, timeout_s=8.0)
             except Exception:
                 continue
             cookies = result.get("cookies", [])
@@ -183,7 +188,7 @@ class StorageCollector:
     def _ensure_dom_storage(self, session_id: str) -> None:
         if session_id in self._dom_storage_enabled:
             return
-        self._command("DOMStorage.enable", session_id=session_id)
+        self._command("DOMStorage.enable", session_id=session_id, timeout_s=5.0)
         self._dom_storage_enabled.add(session_id)
 
     def _dom_storage_items(
@@ -203,6 +208,7 @@ class StorageCollector:
                 }
             },
             session_id=session_id,
+            timeout_s=8.0,
         )
         entries = result.get("entries", [])
         items: dict[str, str] = {}
@@ -216,20 +222,17 @@ class StorageCollector:
         session_id: str,
         origin: str,
     ) -> tuple[dict[str, str], dict[str, str]]:
-        try:
-            local_storage = self._dom_storage_items(
-                session_id,
-                origin=origin,
-                is_local_storage=True,
-            )
-            session_storage = self._dom_storage_items(
-                session_id,
-                origin=origin,
-                is_local_storage=False,
-            )
-            return local_storage, session_storage
-        except Exception:
-            return {}, {}
+        local_storage = self._dom_storage_items(
+            session_id,
+            origin=origin,
+            is_local_storage=True,
+        )
+        session_storage = self._dom_storage_items(
+            session_id,
+            origin=origin,
+            is_local_storage=False,
+        )
+        return local_storage, session_storage
 
     def evaluate(
         self,
@@ -239,14 +242,18 @@ class StorageCollector:
         await_promise: bool = False,
         use_runtime: bool = True,
         timeout_s: float | None = None,
+        args: list[Any] | None = None,
     ) -> Any:
         if use_runtime:
             self._ensure_runtime(session_id)
+        expr = expression
+        if args is not None:
+            expr = f"({expression})({json.dumps(args)})"
         try:
             result = self._command(
                 "Runtime.evaluate",
                 {
-                    "expression": expression,
+                    "expression": expr,
                     "returnByValue": True,
                     "awaitPromise": await_promise,
                 },
@@ -266,14 +273,12 @@ class StorageCollector:
 
     def collect_dom_storage(self, session_id: str, *, origin: str | None = None) -> tuple[dict[str, str], dict[str, str]]:
         if origin:
-            local_storage, session_storage = self.collect_dom_storage_via_dom_storage(
-                session_id,
-                origin,
-            )
-            if local_storage or session_storage:
-                return local_storage, session_storage
+            try:
+                return self.collect_dom_storage_via_dom_storage(session_id, origin)
+            except Exception:
+                pass
 
-        raw = self.evaluate(session_id, STORAGE_EVAL_JS)
+        raw = self.evaluate(session_id, STORAGE_EVAL_JS, timeout_s=8.0)
         if not isinstance(raw, dict):
             return {}, {}
         local_storage = raw.get("localStorage") if isinstance(raw.get("localStorage"), dict) else {}
@@ -283,17 +288,26 @@ class StorageCollector:
     def collect_indexed_db(self, session_id: str) -> dict[str, Any]:
         try:
             self._ensure_runtime(session_id)
+            names = self.evaluate(
+                session_id,
+                INDEXED_DB_PROBE_JS,
+                await_promise=True,
+                use_runtime=False,
+                timeout_s=8.0,
+            )
+            if not isinstance(names, list) or not names:
+                return {}
             raw = self.evaluate(
                 session_id,
                 INDEXED_DB_DUMP_JS,
                 await_promise=True,
                 use_runtime=False,
-                timeout_s=45.0,
+                timeout_s=20.0,
+                args=[names],
             )
         finally:
             self._disable_runtime(session_id)
 
         if not isinstance(raw, dict):
             return {}
-        cleaned = {key: value for key, value in raw.items() if not str(key).startswith("__")}
-        return cleaned
+        return dict(raw)

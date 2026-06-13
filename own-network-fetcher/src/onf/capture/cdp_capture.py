@@ -64,25 +64,66 @@ class CDPCapture:
         self._stop = False
         self._last_flush = time.time()
         self._last_export_sync = 0.0
-        self._last_storage_sync = 0.0
-        self._last_indexeddb_sync = 0.0
         self._indexed_db_cache: dict[str, dict[str, Any]] = {}
+        self._storage_queue: dict[str, tuple[str, str, float]] = {}
+        self._storage_in_progress = False
+        self._storage_skip_logged: set[str] = set()
         self._ws: Any | None = None
         self.requested_target_attach: set[str] = set()
+        self._storage_debounce_s = 1.5
 
     def _capture_target_types(self) -> set[str]:
         if self.config.cookie_export:
             return {"page"}
         return CAPTURE_TARGET_TYPES
 
+    def _valid_page_session(self, session_id: str) -> bool:
+        return (
+            session_id in self.attached_sessions
+            and self.session_target_type.get(session_id) == "page"
+        )
+
     def _session_for_domain(self, domain: str) -> str | None:
         sid = self.page_session_by_domain.get(domain)
-        if sid:
+        if sid and self._valid_page_session(sid):
             return sid
         for session_id, url in self.page_sessions.items():
-            if safe_domain(url) == domain:
+            if safe_domain(url) == domain and self._valid_page_session(session_id):
                 return session_id
         return None
+
+    def _cleanup_session(self, session_id: str) -> None:
+        self.attached_sessions.discard(session_id)
+        self.session_target_type.pop(session_id, None)
+        for target_id, sid in list(self.target_id_to_session.items()):
+            if sid != session_id:
+                continue
+            self.target_id_to_session.pop(target_id, None)
+            self.attached_target_ids.discard(target_id)
+            self.requested_target_attach.discard(target_id)
+        url = self.page_sessions.pop(session_id, "")
+        if not url:
+            return
+        domain = safe_domain(url)
+        if self.page_session_by_domain.get(domain) == session_id:
+            self.page_session_by_domain.pop(domain, None)
+        self._storage_queue.pop(domain, None)
+
+    def _log_storage_skip_once(self, domain: str, referer: str, kind: str, exc: Exception) -> None:
+        key = f"{domain}|{kind}"
+        if key in self._storage_skip_logged:
+            return
+        self._storage_skip_logged.add(key)
+        log_skip(f"{kind} skipped for {referer}: {exc}")
+
+    def _schedule_storage_export(self, session_id: str, url: str) -> None:
+        if not self.config.cookie_export or not self._valid_page_session(session_id):
+            return
+        if not self._is_valid_site_url(url):
+            return
+        domain = safe_domain(url)
+        fire_at = time.time() + self._storage_debounce_s
+        self._storage_queue[domain] = (session_id, url, fire_at)
 
     def _attach_target_if_supported(self, ws: Any, target_info: dict[str, Any]) -> None:
         target_id = target_info.get("targetId")
@@ -143,8 +184,8 @@ class CDPCapture:
         if is_new:
             folder = self.writer.site_dir(domain)
             log_info(f"Site folder ready: {folder}")
-            if self.config.cookie_export:
-                self._sync_site_cookie_files(log_writes=False)
+        if self.config.cookie_export:
+            self._schedule_storage_export(session_id, url)
 
     def _should_save_network_for_domain(self, domain: str) -> bool:
         if not self.primary_sites:
@@ -325,8 +366,16 @@ class CDPCapture:
                 self.target_id_to_session[target_id] = sid
             self._send(ws, "Network.enable", session_id=sid)
             if target_type == "page":
+                if self.config.cookie_export:
+                    self._send(ws, "Page.enable", session_id=sid)
                 self._register_primary_site(sid, target_url)
             log_info(f"Attached: {target_type} {target_url[:100]}")
+            return
+
+        if method == "Target.detachedFromTarget":
+            sid = params.get("sessionId")
+            if sid:
+                self._cleanup_session(sid)
             return
 
         if method == "Target.targetInfoChanged":
@@ -346,6 +395,13 @@ class CDPCapture:
             url = frame.get("url", "")
             if session_id and url:
                 self._register_primary_site(session_id, url)
+            return
+
+        if method == "Page.loadEventFired":
+            if session_id and self.config.cookie_export:
+                url = self.page_sessions.get(session_id, "")
+                if url:
+                    self._schedule_storage_export(session_id, url)
             return
 
         if method == "Network.requestWillBeSent":
@@ -520,28 +576,21 @@ class CDPCapture:
         active_ws = ws or self._ws
         jar = list(self.session.cookie_jar_snapshot)
         collector: StorageCollector | None = None
-        now = time.time()
-        want_dom_storage = collect_storage or (
-            self.config.cookie_export and active_ws is not None and now - self._last_storage_sync >= 5.0
-        )
-        want_indexed_db = collect_storage or (
-            self.config.cookie_export and active_ws is not None and now - self._last_indexeddb_sync >= 15.0
-        )
 
-        if active_ws is not None and (collect_storage or want_dom_storage or want_indexed_db):
+        if active_ws is not None and collect_storage:
             collector = StorageCollector(
                 active_ws,
                 self._send,
-                timeout_s=50.0 if want_indexed_db else 8.0,
+                timeout_s=50.0,
+                on_event=lambda msg: self._handle_event(active_ws, msg),
             )
-            if collect_storage:
-                try:
-                    fresh = collector.get_cookies()
-                    if fresh:
-                        jar = fresh
-                        self.session.cookie_jar_snapshot = fresh
-                except Exception as exc:
-                    log_skip(f"Cookie jar refresh skipped: {exc}")
+            try:
+                fresh = collector.get_cookies()
+                if fresh:
+                    jar = fresh
+                    self.session.cookie_jar_snapshot = fresh
+            except Exception as exc:
+                log_skip(f"Cookie jar refresh skipped: {exc}")
 
         site_count = 0
         file_count = 0
@@ -556,15 +605,17 @@ class CDPCapture:
             indexed_db: dict[str, Any] = {}
             sid = self._session_for_domain(domain)
             origin = security_origin(referer)
-            if collector and sid and origin and want_dom_storage:
+            if collector and sid and origin and collect_storage:
                 try:
                     local_storage, session_storage = collector.collect_dom_storage(
                         sid,
                         origin=origin,
                     )
                 except Exception as exc:
-                    log_skip(f"DOM storage skipped for {referer}: {exc}")
-            if collector and sid and want_indexed_db:
+                    if "Session with given id not found" in str(exc):
+                        self._cleanup_session(sid)
+                    self._log_storage_skip_once(domain, referer, "DOM storage", exc)
+            if collector and sid and collect_storage:
                 try:
                     fetched = collector.collect_indexed_db(sid)
                     if fetched:
@@ -573,7 +624,9 @@ class CDPCapture:
                         if log_writes:
                             log_info(f"  indexedDB: {domain} — {len(fetched)} database(s)")
                 except Exception as exc:
-                    log_skip(f"IndexedDB skipped for {referer}: {exc}")
+                    if "Session with given id not found" in str(exc):
+                        self._cleanup_session(sid)
+                    self._log_storage_skip_once(domain, referer, "IndexedDB", exc)
             if not indexed_db and domain in self._indexed_db_cache:
                 indexed_db = self._indexed_db_cache[domain]
 
@@ -598,13 +651,108 @@ class CDPCapture:
                 for path in paths:
                     log_info(f"  saved {path.name}")
 
-        if want_dom_storage and not collect_storage:
-            self._last_storage_sync = now
-        if want_indexed_db and not collect_storage:
-            self._last_indexeddb_sync = now
-
         if log_writes:
             log_info(f"Cookie export complete: {site_count} site folder(s), {file_count} file(s)")
+
+    def _export_storage_for_session(
+        self,
+        ws: Any,
+        session_id: str,
+        domain: str,
+        referer: str,
+    ) -> None:
+        if not self._valid_page_session(session_id):
+            return
+        origin = security_origin(referer)
+        if not origin:
+            return
+
+        collector = StorageCollector(
+            ws,
+            self._send,
+            timeout_s=25.0,
+            on_event=lambda msg: self._handle_event(ws, msg),
+        )
+        local_storage: dict[str, str] = {}
+        session_storage: dict[str, str] = {}
+        indexed_db: dict[str, Any] = {}
+
+        try:
+            local_storage, session_storage = collector.collect_dom_storage(
+                session_id,
+                origin=origin,
+            )
+        except Exception as exc:
+            if "Session with given id not found" in str(exc):
+                self._cleanup_session(session_id)
+            self._log_storage_skip_once(domain, referer, "DOM storage", exc)
+
+        if self._valid_page_session(session_id):
+            try:
+                fetched = collector.collect_indexed_db(session_id)
+                if fetched:
+                    indexed_db = fetched
+                    self._indexed_db_cache[domain] = fetched
+            except Exception as exc:
+                if "Session with given id not found" in str(exc):
+                    self._cleanup_session(session_id)
+                self._log_storage_skip_once(domain, referer, "IndexedDB", exc)
+
+        if not indexed_db and domain in self._indexed_db_cache:
+            indexed_db = self._indexed_db_cache[domain]
+
+        jar = list(self.session.cookie_jar_snapshot)
+        http_cookies = self._http_cookies_for_site(
+            referer=referer,
+            site_domain=domain,
+            jar=jar,
+        )
+        try:
+            paths = self.writer.write_site_cookie_exports(
+                domain=domain,
+                referer=referer,
+                http_cookies=http_cookies,
+                local_storage=local_storage,
+                session_storage=session_storage,
+                indexed_db=indexed_db,
+            )
+        except Exception as exc:
+            log_skip(f"Site export failed for {domain}: {exc}")
+            return
+
+        if paths:
+            parts: list[str] = []
+            if local_storage:
+                parts.append(f"localStorage={len(local_storage)}")
+            if session_storage:
+                parts.append(f"sessionStorage={len(session_storage)}")
+            if indexed_db:
+                parts.append(f"indexedDB={len(indexed_db)}")
+            detail = f" ({', '.join(parts)})" if parts else ""
+            log_save(f"Storage saved: {domain}{detail}")
+
+    def _process_storage_queue(self, ws: Any) -> None:
+        if self._storage_in_progress or not self._storage_queue:
+            return
+        now = time.time()
+        ready = [(domain, item) for domain, item in self._storage_queue.items() if item[2] <= now]
+        if not ready:
+            return
+
+        domain, (session_id, referer, _) = ready[0]
+        del self._storage_queue[domain]
+
+        if not self._valid_page_session(session_id):
+            return
+        current_url = self.page_sessions.get(session_id, referer)
+        if safe_domain(current_url) != domain:
+            return
+
+        self._storage_in_progress = True
+        try:
+            self._export_storage_for_session(ws, session_id, domain, referer)
+        finally:
+            self._storage_in_progress = False
 
     def _export_cookie_bundles(self, ws: Any) -> None:
         try:
@@ -624,6 +772,16 @@ class CDPCapture:
 
     def _finalize(self, ws: Any | None = None) -> None:
         if ws is not None and self.config.cookie_export:
+            if self._storage_queue:
+                self._storage_queue = {
+                    domain: (sid, referer, 0.0)
+                    for domain, (sid, referer, _) in self._storage_queue.items()
+                }
+                while self._storage_queue and not self._storage_in_progress:
+                    before = len(self._storage_queue)
+                    self._process_storage_queue(ws)
+                    if len(self._storage_queue) >= before:
+                        break
             self._export_cookie_bundles(ws)
 
         self.session.status = "completed"
@@ -698,7 +856,9 @@ class CDPCapture:
         self.writer.write_session(self.session)
         log_info("Capturing — browse in Chrome. Press Ctrl+C to stop.")
         log_info("Sirf Network CDP use ho raha hai (Friend jaisa — kam detection).")
-        log_info("localStorage ~5s par update; IndexedDB ~15s par update; Ctrl+C par final save.")
+        log_info(
+            "Cookies live update; localStorage/IndexedDB page load par save (debounced); Ctrl+C par final."
+        )
 
         try:
             while not self._stop:
@@ -707,6 +867,7 @@ class CDPCapture:
                     raw = ws.recv()
                 except Exception:
                     self._maybe_flush()
+                    self._process_storage_queue(ws)
                     continue
                 if not raw:
                     continue
@@ -719,6 +880,7 @@ class CDPCapture:
                 elif "id" in message:
                     self._handle_command_response(ws, message)
                 self._maybe_flush()
+                self._process_storage_queue(ws)
         except KeyboardInterrupt:
             self._stop = True
         finally:
