@@ -21,16 +21,26 @@ def build_parser() -> argparse.ArgumentParser:
         prog="onf",
         description=(
             "Own Network Fetcher — capture browser sessions to JSON. "
-            "Default mode records cookie traffic only."
+            "Default mode exports cookies + storage on stop."
         ),
     )
     parser.add_argument("--version", action="version", version=f"onf {__version__}")
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
+        "--full-network",
+        action="store_true",
+        help="Option 1: full network scan with detailed request/response per site.",
+    )
+    mode.add_argument(
+        "--cookie-export",
+        action="store_true",
+        help="Option 2: cookie scan only (HTTP + localStorage + IndexedDB on stop).",
+    )
+    mode.add_argument(
         "--all-requests",
         action="store_true",
-        help="Record all network requests/responses (default: cookie-only mode).",
+        help=argparse.SUPPRESS,
     )
 
     parser.add_argument(
@@ -74,7 +84,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def print_startup_banner(config: RunConfig) -> None:
-    mode = "cookie-only" if config.cookie_only else "full (all requests)"
+    if config.full_network:
+        mode = "full network scan (per-site detailed traffic)"
+    else:
+        mode = "cookie export (HTTP + storage snapshot on stop)"
     log_info("=" * 56)
     log_info(f"Own Network Fetcher v{__version__}")
     log_info(f"Capture mode : {mode}")
@@ -99,7 +112,11 @@ def resolve_output_dir(raw: str) -> Path:
 
 
 def build_config(args: argparse.Namespace) -> RunConfig:
-    capture_mode = CaptureMode.FULL if args.all_requests else CaptureMode.COOKIE_ONLY
+    if args.full_network or args.all_requests:
+        capture_mode = CaptureMode.FULL_NETWORK
+    else:
+        capture_mode = CaptureMode.COOKIE_EXPORT
+
     task_id = args.task_id or datetime.now().strftime("task_%Y%m%d_%H%M%S")
 
     return RunConfig(
@@ -110,6 +127,24 @@ def build_config(args: argparse.Namespace) -> RunConfig:
         include_sensitive=args.include_sensitive,
         flush_interval_s=args.flush_interval,
     )
+
+
+def prompt_capture_mode() -> CaptureMode:
+    log_info("")
+    log_info("Select capture mode:")
+    log_info("  1 = Full network scan (har site ka detailed traffic)")
+    log_info("  2 = Cookie scan only (HTTP + localStorage + IndexedDB export)")
+    log_info("")
+    while True:
+        try:
+            choice = input("Enter 1 or 2: ").strip()
+        except EOFError:
+            return CaptureMode.COOKIE_EXPORT
+        if choice == "1":
+            return CaptureMode.FULL_NETWORK
+        if choice == "2":
+            return CaptureMode.COOKIE_EXPORT
+        log_info("Invalid choice. Please enter 1 or 2.")
 
 
 def should_pause(*, disabled: bool) -> bool:
@@ -138,10 +173,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args = build_parser().parse_args(cli_argv)
     config = build_config(args)
-    print_startup_banner(config)
 
-    if double_click:
-        log_info("Double-click mode: default cookie-only capture started.")
+    if double_click and not args.full_network and not args.cookie_export and not args.all_requests:
+        config = config.model_copy(update={"capture_mode": prompt_capture_mode()})
+
+    print_startup_banner(config)
 
     exit_code = 0
     try:

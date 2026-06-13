@@ -2,7 +2,8 @@
 
 output_dir: ./captures
 
-# capture_mode: cookie_only   # default — sirf cookie traffic
+# capture_mode: cookie_export   # default — cookie + storage export on stop
+# capture_mode: full_network    # detailed per-site network traffic
 # capture_mode: full          # --all-requests jaisa
 
 chrome:

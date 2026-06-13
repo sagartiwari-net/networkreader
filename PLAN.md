@@ -1,10 +1,58 @@
 # Own Network Fetcher (ONF) — Product Plan
 
-> **Status:** Phase 1 scaffold ready — implementation in progress  
-> **Stack decision:** Python + Playwright + CDP  
-> **Main codebase:** `own-network-fetcher/` (shuru se naya code)  
+> **Status:** Phase 2 (manual capture) — in progress  
+> **Stack decision:** Python + CDP WebSocket (`websocket-client`) + PyInstaller  
+> **Main codebase:** `own-network-fetcher/`  
 > **Reference prototype:** `Friend/` (Phase 0 — read-only reference)  
 > **Last updated:** June 2026
+
+---
+
+## ★ Current focus (manual workflow)
+
+Abhi **automation aur parallel tasks bilkul nahi**. Aap khud Chrome mein browse karoge; ONF sirf capture + export karega.
+
+### Double-click / launcher — 2 options
+
+| Option | Mode | Output |
+|--------|------|--------|
+| **1 — Full network scan** | `--full-network` | Har website alag folder: `by_site/{domain}/network.ndjson` — request headers/body, response status/headers/body |
+| **2 — Cookie scan only** | `--cookie-export` (default) | Ctrl+C par export: `exports/{domain}.json` — aapke external system ke format mein (`referer`, `includedFormats`, `cookies`, `storage`, `indexedDB`) |
+
+Launcher: `Start ONF.bat` ya `onf.exe` double-click (menu dikhega).
+
+### Revised roadmap (priority order)
+
+| Phase | Focus | Status |
+|-------|--------|--------|
+| **1** | CDP connect, basic capture, Windows `.exe` | ✅ Done |
+| **2** | 2-option menu, duplicate fix, cookie export JSON, full network per-site | 🔄 In progress |
+| **3** | Browser context isolation, better per-tab tracking | ⏸ Later |
+| **4** | Parallel tasks (2–6 contexts) | ⏸ Later |
+| **5** | Remote server sync, login detect | ⏸ Later |
+| **Last** | Browser automation (navigate, fill forms) | ⏸ Sabse last |
+
+### Output layout (Phase 2)
+
+```
+captures/sessions/{task_id}/
+├── session.json
+├── cookies.ndjson              # live cookie events (option 2)
+├── exports/
+│   └── jasper.ai.json          # final cookie bundle (option 2, on stop)
+└── by_site/
+    └── app.jasper.ai/
+        └── network.ndjson      # detailed traffic (option 1)
+```
+
+### Cookie export JSON contract
+
+- HTTP only: `{"referer","includedFormats":["cookies"],"cookies":[...]}`
+- localStorage only: `includedFormats:["localStorage"]`, `storage.localStorage`
+- IndexedDB only: `includedFormats:["indexedDB"]`, `indexedDB.{db}.{stores}`
+- Mixed: sab jo mile (`cookies`, `localStorage`, `sessionStorage`, `indexedDB`) ek hi file mein
+
+Cookie object shape Chrome extension compatible: `domain`, `expirationDate`, `hostOnly`, `httpOnly`, `name`, `path`, `sameSite`, `secure`, `session`, `storeId`, `value`.
 
 ---
 

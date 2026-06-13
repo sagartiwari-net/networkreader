@@ -40,6 +40,15 @@ class NetworkEvent(BaseModel):
     has_set_cookie: bool = False
 
 
+class FullNetworkRecord(BaseModel):
+    timestamp: str
+    url: str
+    method: str
+    domain: str
+    request: dict[str, Any] = Field(default_factory=dict)
+    response: dict[str, Any] = Field(default_factory=dict)
+
+
 class SessionModel(BaseModel):
     task_id: str
     capture_mode: CaptureMode

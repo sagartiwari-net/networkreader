@@ -11,8 +11,8 @@ from pydantic import BaseModel, Field
 class CaptureMode(str, Enum):
     """What to record from the browser."""
 
-    COOKIE_ONLY = "cookie_only"
-    FULL = "full"
+    COOKIE_EXPORT = "cookie_export"
+    FULL_NETWORK = "full_network"
 
 
 class ChromeConfig(BaseModel):
@@ -28,7 +28,7 @@ class RunConfig(BaseModel):
     task_id: str
     output_dir: Path = Field(default=Path("./captures"))
     chrome: ChromeConfig = Field(default_factory=ChromeConfig)
-    capture_mode: CaptureMode = CaptureMode.COOKIE_ONLY
+    capture_mode: CaptureMode = CaptureMode.COOKIE_EXPORT
     include_sensitive: bool = False
     flush_interval_s: float = 2.0
 
@@ -37,5 +37,9 @@ class RunConfig(BaseModel):
         return self.output_dir / "sessions" / self.task_id
 
     @property
-    def cookie_only(self) -> bool:
-        return self.capture_mode == CaptureMode.COOKIE_ONLY
+    def cookie_export(self) -> bool:
+        return self.capture_mode == CaptureMode.COOKIE_EXPORT
+
+    @property
+    def full_network(self) -> bool:
+        return self.capture_mode == CaptureMode.FULL_NETWORK

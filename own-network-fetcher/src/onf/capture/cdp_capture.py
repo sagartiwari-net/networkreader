@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import signal
 import time
@@ -10,14 +11,15 @@ from typing import Any
 
 from onf.capture.cookies import (
     extract_cookie_header,
-    header_lookup,
     parse_cookie_header,
     parse_set_cookie_headers,
     safe_domain,
 )
-from onf.config import CaptureMode, RunConfig
+from onf.capture.storage_collector import StorageCollector
+from onf.config import RunConfig
+from onf.export.cookie_bundle import build_export_payload
 from onf.logging_utils import log_info, log_save, log_skip
-from onf.models.session import CookieEvent, NetworkEvent, SessionModel
+from onf.models.session import CookieEvent, FullNetworkRecord, NetworkEvent, SessionModel
 from onf.storage.json_writer import SessionWriter
 
 CAPTURE_TARGET_TYPES = {
@@ -49,9 +51,12 @@ class CDPCapture:
         self.next_id = 1
         self.pending_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         self.response_meta: dict[tuple[str, str], dict[str, Any]] = {}
-        self.requested_target_attach: set[str] = set()
+        self.attached_target_ids: set[str] = set()
         self.attached_sessions: set[str] = set()
+        self.page_sessions: dict[str, str] = {}
         self.pending_command_methods: dict[int, str] = {}
+        self.pending_body_requests: dict[int, tuple[str, str]] = {}
+        self._dedupe_keys: set[str] = set()
         self._stop = False
         self._last_flush = time.time()
 
@@ -86,7 +91,16 @@ class CDPCapture:
                     clean[str(name)] = str(value)
         return clean
 
+    def _cookie_dedupe_key(self, event: CookieEvent) -> str:
+        names = tuple(sorted(str(item.get("name", "")) for item in event.cookies))
+        return f"{event.event_type}|{event.url}|{event.method}|{names}|{len(event.cookies)}"
+
     def _save_cookie_event(self, event: CookieEvent) -> None:
+        dedupe_key = self._cookie_dedupe_key(event)
+        if dedupe_key in self._dedupe_keys:
+            return
+        self._dedupe_keys.add(dedupe_key)
+
         self.session.cookie_events.append(event)
         self.session.summary.cookie_events_saved += 1
         self.writer.append_cookie_event(event)
@@ -142,80 +156,102 @@ class CDPCapture:
         )
         self._save_cookie_event(event)
 
-    def _emit_full_request(self, state: dict[str, Any]) -> None:
-        url = state.get("url") or ""
-        method = state.get("method") or "GET"
+    def _write_full_network_record(self, key: tuple[str, str], body: str | None) -> None:
+        state = self.pending_by_key.get(key, {})
+        meta = self.response_meta.get(key, {})
+        url = meta.get("url") or state.get("url") or ""
         if not url.startswith(("http://", "https://")):
             return
+        if state.get("full_record_saved"):
+            return
+
         headers = state.get("extra_headers") or state.get("headers") or {}
         cookie_header = extract_cookie_header(headers)
-        event = NetworkEvent(
+        request_payload: dict[str, Any] = {
+            "url": url,
+            "method": state.get("method") or "GET",
+            "headers": self._clean_headers(headers),
+        }
+        if state.get("post_data"):
+            request_payload["postData"] = state["post_data"]
+        if cookie_header:
+            cookies, _ = parse_cookie_header(cookie_header)
+            request_payload["cookies"] = cookies
+            request_payload["cookieHeader"] = cookie_header
+
+        response_payload: dict[str, Any] = {
+            "status": meta.get("status"),
+            "headers": self._clean_headers(meta.get("headers", {})),
+            "mimeType": meta.get("mimeType"),
+            "body": body,
+        }
+        set_cookies = parse_set_cookie_headers(meta.get("headers", {}))
+        if set_cookies:
+            response_payload["setCookies"] = set_cookies
+
+        record = FullNetworkRecord(
             timestamp=state.get("created_at", datetime.now(timezone.utc).isoformat()),
             url=url,
-            method=method,
+            method=state.get("method") or "GET",
             domain=safe_domain(url),
-            request_headers=self._clean_headers(headers),
-            has_request_cookie=bool(cookie_header),
+            request=request_payload,
+            response=response_payload,
         )
         self.session.summary.network_events_saved += 1
-        self.writer.append_network_event(event)
-        log_save(f"REQ {method:<6} {safe_domain(url)} {url[:80]}")
+        self.writer.append_full_network_record(record)
+        state["full_record_saved"] = True
+        log_save(
+            f"NET {record.method:<6} {record.response.get('status')} "
+            f"{record.domain} {url[:80]}"
+        )
 
     def _try_process_request(self, key: tuple[str, str]) -> None:
         state = self.pending_by_key.get(key)
         if not state or state.get("processed"):
             return
 
-        self.session.summary.total_requests_seen += 1
         headers = state.get("extra_headers") or state.get("headers") or {}
         cookie_header = extract_cookie_header(headers)
 
-        if self.config.cookie_only:
-            if not cookie_header:
-                self.session.summary.requests_skipped += 1
-                state["processed"] = True
-                return
-            self._emit_request_cookie(state)
-            state["processed"] = True
+        if self.config.full_network:
+            if not state.get("counted"):
+                self.session.summary.total_requests_seen += 1
+                state["counted"] = True
             return
 
-        if headers:
-            self._emit_full_request(state)
+        self.session.summary.total_requests_seen += 1
+        if not cookie_header:
+            self.session.summary.requests_skipped += 1
             state["processed"] = True
-
-    def _attach_target_if_supported(self, ws: Any, target_info: dict[str, Any]) -> None:
-        target_id = target_info.get("targetId")
-        target_type = target_info.get("type")
-        if not target_id or target_type not in CAPTURE_TARGET_TYPES:
             return
-        if target_id in self.requested_target_attach:
-            return
-        self.requested_target_attach.add(target_id)
-        self._send(ws, "Target.attachToTarget", {"targetId": target_id, "flatten": True})
+        self._emit_request_cookie(state)
+        state["processed"] = True
 
     def _handle_event(self, ws: Any, message: dict[str, Any]) -> None:
         method = message.get("method")
         params = message.get("params", {})
         session_id = message.get("sessionId", "")
 
-        if method == "Target.targetCreated":
-            self._attach_target_if_supported(ws, params.get("targetInfo", {}))
-            return
-
         if method == "Target.attachedToTarget":
             sid = params.get("sessionId")
             target_info = params.get("targetInfo", {})
             target_type = target_info.get("type")
             target_url = target_info.get("url", "")
+            target_id = target_info.get("targetId", "")
             if not sid:
                 return
             if target_type not in CAPTURE_TARGET_TYPES:
                 self._send(ws, "Target.detachFromTarget", {"sessionId": sid})
                 return
-            if sid in self.attached_sessions:
+            if sid in self.attached_sessions or target_id in self.attached_target_ids:
+                self._send(ws, "Target.detachFromTarget", {"sessionId": sid})
                 return
             self.attached_sessions.add(sid)
+            if target_id:
+                self.attached_target_ids.add(target_id)
+            self.page_sessions[sid] = target_url
             self._send(ws, "Network.enable", session_id=sid)
+            self._send(ws, "Runtime.enable", session_id=sid)
             log_info(f"Attached: {target_type} {target_url[:100]}")
             return
 
@@ -231,6 +267,7 @@ class CDPCapture:
                 "url": request.get("url"),
                 "headers": request.get("headers", {}) or {},
                 "extra_headers": prev.get("extra_headers"),
+                "post_data": request.get("postData"),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "processed": False,
             }
@@ -260,8 +297,9 @@ class CDPCapture:
                 "url": response.get("url", ""),
                 "status": response.get("status"),
                 "headers": response.get("headers", {}) or {},
+                "mimeType": response.get("mimeType"),
             }
-            if self.config.cookie_only:
+            if self.config.full_network:
                 return
             state = self.pending_by_key.get(key, {})
             meta = self.response_meta.get(key, {})
@@ -296,7 +334,7 @@ class CDPCapture:
             url = meta.get("url") or state.get("url") or ""
             method_name = state.get("method") or "GET"
             status = meta.get("status")
-            if self.config.cookie_only:
+            if self.config.cookie_export:
                 self._emit_set_cookie(
                     url=url,
                     method=method_name,
@@ -305,17 +343,93 @@ class CDPCapture:
                 )
             return
 
+        if method == "Network.loadingFinished" and self.config.full_network:
+            request_id = params.get("requestId", "")
+            if not request_id:
+                return
+            key = (session_id, request_id)
+            msg_id = self._send(
+                ws,
+                "Network.getResponseBody",
+                {"requestId": request_id},
+                session_id=session_id,
+            )
+            self.pending_body_requests[msg_id] = key
+            return
+
     def _handle_command_response(self, ws: Any, message: dict[str, Any]) -> None:
         msg_id = message.get("id")
         if not msg_id:
             return
         cmd = self.pending_command_methods.pop(msg_id, "")
-        if cmd == "Target.getTargets":
-            for target_info in message.get("result", {}).get("targetInfos", []):
-                self._attach_target_if_supported(ws, target_info)
+        if cmd == "Network.getResponseBody":
+            key = self.pending_body_requests.pop(msg_id, None)
+            if not key:
+                return
+            result = message.get("result", {})
+            body = result.get("body")
+            if body and result.get("base64Encoded"):
+                try:
+                    body = base64.b64decode(body).decode("utf-8", errors="replace")
+                except Exception:
+                    body = str(body)
+            self._write_full_network_record(key, body)
         elif cmd == "Storage.getCookies":
             self.session.cookie_jar_snapshot = message.get("result", {}).get("cookies", [])
-            log_info(f"Cookie jar snapshot: {len(self.session.cookie_jar_snapshot)} cookies")
+
+    def _export_cookie_bundles(self, ws: Any) -> None:
+        collector = StorageCollector(ws, self._send, [self.next_id])
+        try:
+            all_cookies = collector.get_cookies()
+        except Exception as exc:
+            log_skip(f"Cookie export skipped: {exc}")
+            return
+
+        self.session.cookie_jar_snapshot = all_cookies
+        referers: dict[str, str] = {}
+        session_for_domain: dict[str, str] = {}
+
+        for sid, url in self.page_sessions.items():
+            if not url.startswith(("http://", "https://")):
+                continue
+            domain = safe_domain(url)
+            referers[domain] = url
+            session_for_domain[domain] = sid
+
+        if not referers:
+            for event in self.session.cookie_events:
+                referers.setdefault(event.domain, event.url)
+
+        export_count = 0
+        for domain, referer in referers.items():
+            local_storage: dict[str, str] = {}
+            session_storage: dict[str, str] = {}
+            indexed_db: dict[str, Any] = {}
+            sid = session_for_domain.get(domain)
+            if sid:
+                try:
+                    local_storage, session_storage = collector.collect_dom_storage(sid)
+                except Exception as exc:
+                    log_skip(f"DOM storage skipped for {referer}: {exc}")
+                try:
+                    indexed_db = collector.collect_indexed_db(sid)
+                except Exception as exc:
+                    log_skip(f"IndexedDB skipped for {referer}: {exc}")
+
+            payload = build_export_payload(
+                referer=referer,
+                http_cookies=all_cookies,
+                local_storage=local_storage or None,
+                session_storage=session_storage or None,
+                indexed_db=indexed_db or None,
+            )
+            if not payload.get("includedFormats"):
+                continue
+            path = self.writer.write_cookie_export(domain, payload)
+            export_count += 1
+            log_info(f"Cookie export saved: {path}")
+
+        log_info(f"Cookie export files: {export_count} site(s) in {self.writer.exports_dir}")
 
     def _maybe_flush(self) -> None:
         now = time.time()
@@ -324,33 +438,28 @@ class CDPCapture:
             self._last_flush = now
 
     def _finalize(self, ws: Any | None = None) -> None:
-        if ws is not None:
-            try:
-                self._send(ws, "Storage.getCookies")
-                raw = ws.recv()
-                message = json.loads(raw)
-                if message.get("id"):
-                    self._handle_command_response(ws, message)
-            except Exception as exc:
-                log_skip(f"Cookie jar snapshot skipped: {exc}")
+        if ws is not None and self.config.cookie_export:
+            self._export_cookie_bundles(ws)
 
         self.session.status = "completed"
         self.session.ended_at = datetime.now(timezone.utc)
         self.writer.write_session(self.session)
         summary = self.session.summary
-        if self.config.cookie_only:
+        if self.config.cookie_export:
             log_info(
                 "Stopped — "
                 f"cookie_events={summary.cookie_events_saved}, "
                 f"skipped={summary.requests_skipped}, "
                 f"seen={summary.total_requests_seen}"
             )
+            log_info(f"Exports folder: {self.writer.exports_dir}")
         else:
             log_info(
                 "Stopped — "
                 f"network_events={summary.network_events_saved}, "
                 f"seen={summary.total_requests_seen}"
             )
+            log_info(f"Per-site network folder: {self.writer.by_site_dir}")
         log_info(f"Session saved: {self.writer.session_path}")
 
     def run(self) -> None:
@@ -362,9 +471,9 @@ class CDPCapture:
             ) from exc
 
         mode_label = (
-            "cookie-only (non-cookie traffic skipped)"
-            if self.config.cookie_only
-            else "full (all requests recorded)"
+            "cookie export (HTTP + storage snapshot on stop)"
+            if self.config.cookie_export
+            else "full network (detailed per-site traffic)"
         )
         log_info(f"Capture mode: {mode_label}")
         log_info(f"Session output: {self.writer.session_path}")
@@ -389,7 +498,6 @@ class CDPCapture:
             "Target.setAutoAttach",
             {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
         )
-        self._send(ws, "Target.getTargets")
         self.writer.write_session(self.session)
         log_info("Capturing — browse in Chrome. Press Ctrl+C to stop.")
 

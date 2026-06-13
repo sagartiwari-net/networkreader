@@ -1,3 +1,3 @@
 """Own Network Fetcher — isolated browser session capture."""
 
-__version__ = "0.1.1-phase1"
+__version__ = "0.2.0-manual"
