@@ -112,8 +112,16 @@ def build_config(args: argparse.Namespace) -> RunConfig:
     )
 
 
+def should_pause(*, disabled: bool) -> bool:
+    if disabled:
+        return False
+    if is_frozen():
+        return True
+    return sys.stdin.isatty()
+
+
 def pause_before_exit(exit_code: int, *, disabled: bool) -> None:
-    if disabled or not sys.stdin.isatty():
+    if not should_pause(disabled=disabled):
         return
     try:
         input("\nPress Enter to exit...")
@@ -138,13 +146,12 @@ def main(argv: list[str] | None = None) -> int:
     exit_code = 0
     try:
         exit_code = asyncio.run(run_capture(config))
-    except SystemExit as exc:
-        exit_code = exc.code if isinstance(exc.code, int) else 1
-        if exit_code != 0:
-            log_info(f"Exit code: {exit_code}")
     except Exception as exc:
         log_info(f"Error: {exc}")
         exit_code = 1
+
+    if exit_code != 0:
+        log_info(f"Exit code: {exit_code}")
 
     pause_before_exit(exit_code, disabled=args.no_pause)
     return exit_code

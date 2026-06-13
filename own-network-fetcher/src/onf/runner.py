@@ -11,16 +11,27 @@ from onf.logging_utils import log_info
 
 
 async def run_capture(config: RunConfig) -> int:
-    async with async_playwright() as playwright:
+    try:
+        playwright_ctx = async_playwright()
+    except Exception as exc:
+        log_info(f"Playwright load failed: {exc}")
+        log_info(
+            "Install Microsoft Visual C++ Redistributable x64, then rebuild:\n"
+            "  https://aka.ms/vs/17/release/vc_redist.x64.exe"
+        )
+        return 1
+
+    async with playwright_ctx as playwright:
         try:
             browser = await connect_browser(playwright, config.chrome)
         except Exception as exc:
             log_info(
                 "Could not connect to Chrome. Start Chrome with remote debugging, e.g.\n"
-                f'  chrome --remote-debugging-port={config.chrome.port} '
+                f'  chrome.exe --remote-debugging-port={config.chrome.port} '
                 "--remote-allow-origins=*"
             )
-            raise SystemExit(f"CDP connect failed: {exc}") from exc
+            log_info(f"CDP connect failed: {exc}")
+            return 1
 
         capture = SessionCapture(browser, config)
         await capture.start()

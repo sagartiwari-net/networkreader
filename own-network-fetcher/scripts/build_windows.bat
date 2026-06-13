@@ -40,8 +40,8 @@ echo.
 echo ========================================
 echo Build complete:
 echo   dist\onf.exe
-echo   ..\onf.exe              ^<- ROOT folder (copy yahi se)
-echo   ..\onf-%VERSION%.exe
+echo   ..\onf.exe              ^<- run from CMD
+echo   ..\Start ONF.bat        ^<- double-click this (recommended)
 echo   releases\onf.exe
 echo.
 echo Double-click = cookie mode, port 9222
