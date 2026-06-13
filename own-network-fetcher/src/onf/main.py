@@ -8,7 +8,12 @@ from datetime import datetime
 from pathlib import Path
 
 from onf import __version__
-from onf.chrome_launcher import format_profile_menu, profile_directory_from_menu_choice
+from onf.chrome_launcher import (
+    format_profile_menu,
+    is_chrome_running,
+    is_debug_port_ready,
+    profile_directory_from_menu_choice,
+)
 from onf.chrome_profiles import list_installed_profiles, profile_display_name
 from onf.config import CaptureMode, ChromeConfig, RunConfig
 from onf.logging_utils import log_info
@@ -133,6 +138,8 @@ def print_startup_banner(config: RunConfig) -> None:
     log_info("-" * 56)
     if config.auto_launch_chrome and not config.force_restart_chrome:
         log_info("Tip: pehle scripts\\launch_chrome_profile.bat chalao — ONF turant connect karega.")
+    elif config.force_restart_chrome:
+        log_info("Chrome debug mode mein launch hoga (profile restart).")
     log_info("Capture ke liye Ctrl+C se band karo.")
     log_info("=" * 56)
 
@@ -170,6 +177,44 @@ def build_config(args: argparse.Namespace) -> RunConfig:
         auto_launch_chrome=not args.no_auto_chrome,
         force_restart_chrome=args.force_restart_chrome,
     )
+
+
+def prompt_chrome_debug_if_needed(config: RunConfig) -> RunConfig:
+    """Ask to restart Chrome in debug mode when port 9222 is not ready."""
+    if not config.auto_launch_chrome or config.force_restart_chrome:
+        return config
+    if is_debug_port_ready(config.chrome):
+        return config
+    if not is_chrome_running():
+        return config
+
+    log_info("")
+    log_info("=" * 56)
+    log_info("Chrome debug port 9222 par ready NAHI hai.")
+    log_info("Chrome normal mode mein chal raha hai (debug port ke bina).")
+    log_info("Mode 1 aur Mode 2 DONO ke liye debug port zaroori hai.")
+    profile_name = profile_display_name(config.chrome.profile_directory)
+    log_info(f"Selected profile: {profile_name} ({config.chrome.profile_directory})")
+    log_info("")
+    log_info("Chrome band karke isi profile mein debug mode mein kholein?")
+    log_info("  Y = Haan (recommended)")
+    log_info("  N = Nahi — manually scripts\\launch_chrome_profile.bat chalao")
+    log_info("")
+
+    while True:
+        try:
+            choice = input("Y/N: ").strip().upper()
+        except EOFError:
+            return config.model_copy(update={"force_restart_chrome": True})
+
+        if choice in {"Y", "YES"}:
+            return config.model_copy(update={"force_restart_chrome": True})
+        if choice in {"N", "NO"}:
+            raise RuntimeError(
+                "Debug port ready nahi.\n"
+                "Pehle scripts\\launch_chrome_profile.bat chalao, phir ONF dubara chalao."
+            )
+        log_info("Sirf Y ya N enter karo.")
 
 
 def prompt_chrome_profile() -> str:
@@ -255,6 +300,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             }
         )
+
+    if is_frozen() or sys.stdin.isatty():
+        config = prompt_chrome_debug_if_needed(config)
 
     print_startup_banner(config)
 

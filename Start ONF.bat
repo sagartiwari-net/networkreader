@@ -48,12 +48,12 @@ echo.
 set /p MODE="Enter 1 or 2: "
 
 if "%MODE%"=="1" (
-  onf.exe --full-network --no-pause
+  onf.exe --full-network --no-pause --force-restart-chrome
   goto :after_run
 )
 
 if "%MODE%"=="2" (
-  onf.exe --cookie-export --no-pause
+  onf.exe --cookie-export --no-pause --force-restart-chrome
   goto :after_run
 )
 
