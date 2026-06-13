@@ -65,6 +65,8 @@ class CDPCapture:
         self._last_flush = time.time()
         self._last_export_sync = 0.0
         self._last_storage_sync = 0.0
+        self._last_indexeddb_sync = 0.0
+        self._indexed_db_cache: dict[str, dict[str, Any]] = {}
         self._ws: Any | None = None
         self.requested_target_attach: set[str] = set()
 
@@ -522,9 +524,16 @@ class CDPCapture:
         want_dom_storage = collect_storage or (
             self.config.cookie_export and active_ws is not None and now - self._last_storage_sync >= 5.0
         )
+        want_indexed_db = collect_storage or (
+            self.config.cookie_export and active_ws is not None and now - self._last_indexeddb_sync >= 15.0
+        )
 
-        if active_ws is not None and (collect_storage or want_dom_storage):
-            collector = StorageCollector(active_ws, self._send, timeout_s=8.0)
+        if active_ws is not None and (collect_storage or want_dom_storage or want_indexed_db):
+            collector = StorageCollector(
+                active_ws,
+                self._send,
+                timeout_s=50.0 if want_indexed_db else 8.0,
+            )
             if collect_storage:
                 try:
                     fresh = collector.get_cookies()
@@ -555,11 +564,18 @@ class CDPCapture:
                     )
                 except Exception as exc:
                     log_skip(f"DOM storage skipped for {referer}: {exc}")
-            if collector and sid and collect_storage:
+            if collector and sid and want_indexed_db:
                 try:
-                    indexed_db = collector.collect_indexed_db(sid)
+                    fetched = collector.collect_indexed_db(sid)
+                    if fetched:
+                        indexed_db = fetched
+                        self._indexed_db_cache[domain] = fetched
+                        if log_writes:
+                            log_info(f"  indexedDB: {domain} — {len(fetched)} database(s)")
                 except Exception as exc:
                     log_skip(f"IndexedDB skipped for {referer}: {exc}")
+            if not indexed_db and domain in self._indexed_db_cache:
+                indexed_db = self._indexed_db_cache[domain]
 
             try:
                 paths = self.writer.write_site_cookie_exports(
@@ -584,6 +600,8 @@ class CDPCapture:
 
         if want_dom_storage and not collect_storage:
             self._last_storage_sync = now
+        if want_indexed_db and not collect_storage:
+            self._last_indexeddb_sync = now
 
         if log_writes:
             log_info(f"Cookie export complete: {site_count} site folder(s), {file_count} file(s)")
@@ -680,7 +698,7 @@ class CDPCapture:
         self.writer.write_session(self.session)
         log_info("Capturing — browse in Chrome. Press Ctrl+C to stop.")
         log_info("Sirf Network CDP use ho raha hai (Friend jaisa — kam detection).")
-        log_info("localStorage live update + IndexedDB Ctrl+C par save hoga.")
+        log_info("localStorage ~5s par update; IndexedDB ~15s par update; Ctrl+C par final save.")
 
         try:
             while not self._stop:

@@ -30,10 +30,17 @@ STORAGE_EVAL_JS = """
 INDEXED_DB_DUMP_JS = """
 (async () => {
   const result = {};
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   try {
-    const dbList = await indexedDB.databases();
+    let dbList = [];
+    if (typeof indexedDB.databases === "function") {
+      dbList = await indexedDB.databases();
+    }
+    if (!dbList.length) {
+      return result;
+    }
     for (const meta of dbList) {
-      const dbName = meta.name;
+      const dbName = meta && meta.name;
       if (!dbName) continue;
       await new Promise((resolve) => {
         const request = indexedDB.open(dbName);
@@ -49,29 +56,40 @@ INDEXED_DB_DUMP_JS = """
             return;
           }
           for (const storeName of storeNames) {
-            const tx = db.transaction(storeName, "readonly");
-            const store = tx.objectStore(storeName);
-            const getAll = store.getAll();
-            getAll.onsuccess = () => {
-              result[dbName].stores[storeName] = getAll.result;
+            try {
+              const tx = db.transaction(storeName, "readonly");
+              const store = tx.objectStore(storeName);
+              const getAll = store.getAll();
+              getAll.onsuccess = () => {
+                result[dbName].stores[storeName] = getAll.result;
+                pending -= 1;
+                if (pending === 0) {
+                  db.close();
+                  resolve();
+                }
+              };
+              getAll.onerror = () => {
+                pending -= 1;
+                if (pending === 0) {
+                  db.close();
+                  resolve();
+                }
+              };
+            } catch (e) {
               pending -= 1;
               if (pending === 0) {
                 db.close();
                 resolve();
               }
-            };
-            getAll.onerror = () => {
-              pending -= 1;
-              if (pending === 0) {
-                db.close();
-                resolve();
-              }
-            };
+            }
           }
         };
       });
+      await sleep(0);
     }
-  } catch (e) {}
+  } catch (e) {
+    result.__error = String(e && e.message ? e.message : e);
+  }
   return result;
 })()
 """
@@ -103,15 +121,25 @@ class StorageCollector:
         self._send = send
         self._timeout_s = timeout_s
         self._dom_storage_enabled: set[str] = set()
+        self._runtime_enabled: set[str] = set()
+
+    def _drain_event(self, payload: dict[str, Any], msg_id: int) -> dict[str, Any] | None:
+        if payload.get("id") == msg_id:
+            if payload.get("error"):
+                raise RuntimeError(f"CDP error: {payload['error']}")
+            return payload.get("result", {})
+        return None
 
     def _command(
         self,
         method: str,
         params: dict[str, Any] | None = None,
         session_id: str | None = None,
+        *,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         msg_id = self._send(self.ws, method, params, session_id=session_id)
-        deadline = time.time() + self._timeout_s
+        deadline = time.time() + (timeout_s if timeout_s is not None else self._timeout_s)
         while time.time() < deadline:
             self.ws.settimeout(1.0)
             try:
@@ -121,11 +149,25 @@ class StorageCollector:
             if not raw:
                 continue
             payload = json.loads(raw)
-            if payload.get("id") == msg_id:
-                if payload.get("error"):
-                    raise RuntimeError(f"{method} failed: {payload['error']}")
-                return payload.get("result", {})
+            result = self._drain_event(payload, msg_id)
+            if result is not None:
+                return result
         raise TimeoutError(f"CDP command timed out: {method}")
+
+    def _ensure_runtime(self, session_id: str) -> None:
+        if session_id in self._runtime_enabled:
+            return
+        self._command("Runtime.enable", session_id=session_id)
+        self._runtime_enabled.add(session_id)
+
+    def _disable_runtime(self, session_id: str) -> None:
+        if session_id not in self._runtime_enabled:
+            return
+        try:
+            self._command("Runtime.disable", session_id=session_id, timeout_s=5.0)
+        except Exception:
+            pass
+        self._runtime_enabled.discard(session_id)
 
     def get_cookies(self) -> list[dict[str, Any]]:
         for method in ("Storage.getCookies", "Network.getAllCookies"):
@@ -189,8 +231,17 @@ class StorageCollector:
         except Exception:
             return {}, {}
 
-    def evaluate(self, session_id: str, expression: str, *, await_promise: bool = False) -> Any:
-        result: dict[str, Any] = {}
+    def evaluate(
+        self,
+        session_id: str,
+        expression: str,
+        *,
+        await_promise: bool = False,
+        use_runtime: bool = True,
+        timeout_s: float | None = None,
+    ) -> Any:
+        if use_runtime:
+            self._ensure_runtime(session_id)
         try:
             result = self._command(
                 "Runtime.evaluate",
@@ -200,8 +251,11 @@ class StorageCollector:
                     "awaitPromise": await_promise,
                 },
                 session_id=session_id,
+                timeout_s=timeout_s,
             )
         except Exception:
+            return None
+        if result.get("exceptionDetails"):
             return None
         remote = result.get("result", {})
         if remote.get("type") == "undefined":
@@ -227,5 +281,19 @@ class StorageCollector:
         return dict(local_storage), dict(session_storage)
 
     def collect_indexed_db(self, session_id: str) -> dict[str, Any]:
-        raw = self.evaluate(session_id, INDEXED_DB_DUMP_JS, await_promise=True)
-        return dict(raw) if isinstance(raw, dict) else {}
+        try:
+            self._ensure_runtime(session_id)
+            raw = self.evaluate(
+                session_id,
+                INDEXED_DB_DUMP_JS,
+                await_promise=True,
+                use_runtime=False,
+                timeout_s=45.0,
+            )
+        finally:
+            self._disable_runtime(session_id)
+
+        if not isinstance(raw, dict):
+            return {}
+        cleaned = {key: value for key, value in raw.items() if not str(key).startswith("__")}
+        return cleaned
