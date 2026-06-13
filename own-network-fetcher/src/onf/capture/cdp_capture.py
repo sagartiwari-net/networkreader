@@ -55,6 +55,8 @@ class CDPCapture:
         self.page_sessions: dict[str, str] = {}
         self.primary_sites: dict[str, str] = {}
         self.page_session_by_domain: dict[str, str] = {}
+        self.session_target_type: dict[str, str] = {}
+        self.target_id_to_session: dict[str, str] = {}
         self.pending_command_methods: dict[int, str] = {}
         self.pending_body_requests: dict[int, tuple[str, str]] = {}
         self._dedupe_keys: set[str] = set()
@@ -276,14 +278,26 @@ class CDPCapture:
                 self._send(ws, "Target.detachFromTarget", {"sessionId": sid})
                 return
             self.attached_sessions.add(sid)
+            self.session_target_type[sid] = target_type
             if target_id:
                 self.attached_target_ids.add(target_id)
+                self.target_id_to_session[target_id] = sid
             self._send(ws, "Network.enable", session_id=sid)
             self._send(ws, "Runtime.enable", session_id=sid)
             if target_type == "page":
                 self._send(ws, "Page.enable", session_id=sid)
                 self._register_primary_site(sid, target_url)
             log_info(f"Attached: {target_type} {target_url[:100]}")
+            return
+
+        if method == "Target.targetInfoChanged":
+            target_info = params.get("targetInfo", {})
+            if target_info.get("type") != "page":
+                return
+            target_id = target_info.get("targetId", "")
+            sid = self.target_id_to_session.get(target_id)
+            if sid:
+                self._register_primary_site(sid, target_info.get("url", ""))
             return
 
         if method == "Page.frameNavigated":
@@ -300,11 +314,19 @@ class CDPCapture:
             request = params.get("request", {})
             if not request_id:
                 return
+            url = request.get("url", "")
+            if (
+                session_id
+                and params.get("type") == "Document"
+                and self.session_target_type.get(session_id) == "page"
+                and self._is_valid_site_url(url)
+            ):
+                self._register_primary_site(session_id, url)
             key = (session_id, request_id)
             prev = self.pending_by_key.get(key, {})
             self.pending_by_key[key] = {
                 "method": request.get("method"),
-                "url": request.get("url"),
+                "url": url,
                 "headers": request.get("headers", {}) or {},
                 "extra_headers": prev.get("extra_headers"),
                 "post_data": request.get("postData"),
@@ -419,25 +441,30 @@ class CDPCapture:
         elif cmd == "Storage.getCookies":
             self.session.cookie_jar_snapshot = message.get("result", {}).get("cookies", [])
 
+    def _collect_export_referers(self) -> dict[str, str]:
+        referers = dict(self.primary_sites)
+        if referers:
+            return referers
+
+        for sid, url in self.page_sessions.items():
+            if self.session_target_type.get(sid) != "page":
+                continue
+            if not self._is_valid_site_url(url):
+                continue
+            domain = safe_domain(url)
+            referers.setdefault(domain, url)
+
+        return referers
+
     def _export_cookie_bundles(self, ws: Any) -> None:
         collector = StorageCollector(ws, self._send)
-        try:
-            all_cookies = collector.get_cookies()
-        except Exception as exc:
-            log_skip(f"Cookie jar read failed: {exc}")
-            all_cookies = []
-
+        all_cookies = collector.get_cookies()
         self.session.cookie_jar_snapshot = all_cookies
-        referers = dict(self.primary_sites)
-        if not referers:
-            for event in self.session.cookie_events:
-                if not self._is_valid_site_url(event.url):
-                    continue
-                domain = safe_domain(event.url)
-                referers.setdefault(domain, event.url)
+        referers = self._collect_export_referers()
 
         if not referers:
             log_skip("No website tab detected — koi site folder nahi bana.")
+            log_skip("Chrome mein site kholo, thoda browse karo, phir Ctrl+C dabao.")
             return
 
         site_count = 0
@@ -520,6 +547,15 @@ class CDPCapture:
         )
         log_info(f"Capture mode: {mode_label}")
         log_info(f"Session output: {self.writer.session_path}")
+        log_info(
+            "Per-site folders: "
+            f"{self.writer.sites_root}/<website>/"
+            + (
+                "cookies.http.json, localStorage.json, cookies.all.json, ..."
+                if self.config.cookie_export
+                else "network.ndjson"
+            )
+        )
 
         try:
             ws = websocket.create_connection(self.ws_url, timeout=3, suppress_origin=True)

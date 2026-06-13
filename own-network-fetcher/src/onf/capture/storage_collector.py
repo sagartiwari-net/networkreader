@@ -125,8 +125,15 @@ class StorageCollector:
         raise TimeoutError(f"CDP command timed out: {method}")
 
     def get_cookies(self) -> list[dict[str, Any]]:
-        result = self._command("Storage.getCookies")
-        return list(result.get("cookies", []))
+        for method in ("Storage.getCookies", "Network.getAllCookies"):
+            try:
+                result = self._command(method)
+            except Exception:
+                continue
+            cookies = result.get("cookies", [])
+            if cookies or method == "Network.getAllCookies":
+                return list(cookies)
+        return []
 
     def evaluate(self, session_id: str, expression: str, *, await_promise: bool = False) -> Any:
         result = self._command(
