@@ -80,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not wait for Enter before closing (CMD scripts).",
     )
+    parser.add_argument(
+        "--no-auto-chrome",
+        action="store_true",
+        help="Do not auto-launch Chrome debug mode when port 9222 is not ready.",
+    )
     return parser
 
 
@@ -95,13 +100,13 @@ def print_startup_banner(config: RunConfig) -> None:
     log_info(f"Task ID      : {config.task_id}")
     log_info(f"Output folder: {config.session_dir}")
     log_info("-" * 56)
-    log_info("Pehle Chrome debug mode mein kholo (ya already open rakho):")
-    log_info(
-        f'  scripts\\start_chrome_debug.bat   (recommended)\n'
-        f'  OR chrome.exe --remote-debugging-port={config.chrome.port} '
-        "--remote-allow-origins=* --user-data-dir=%LOCALAPPDATA%\\onf-chrome-debug"
-    )
-    log_info("Phir Chrome mein site browse karo. Band karne ke liye: Ctrl+C")
+    if config.auto_launch_chrome:
+        log_info("Chrome debug auto-start ON — port 9222 nahi mila to ONF khud debug Chrome kholega.")
+    else:
+        log_info("Pehle Chrome debug mode mein kholo:")
+        log_info(f'  scripts\\start_chrome_debug.bat')
+    log_info("NOTE: Normal Chrome icon se khola browser detect NAHI hota.")
+    log_info("Phir site browse karo. Band karne ke liye: Ctrl+C")
     log_info("=" * 56)
 
 
@@ -126,6 +131,7 @@ def build_config(args: argparse.Namespace) -> RunConfig:
         capture_mode=capture_mode,
         include_sensitive=args.include_sensitive,
         flush_interval_s=args.flush_interval,
+        auto_launch_chrome=not args.no_auto_chrome,
     )
 
 

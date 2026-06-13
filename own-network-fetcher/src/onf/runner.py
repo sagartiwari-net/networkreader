@@ -10,10 +10,15 @@ from onf.logging_utils import log_info
 
 def run_capture(config: RunConfig) -> int:
     try:
-        ws_url = get_browser_ws_url(config.chrome)
+        ws_url = get_browser_ws_url(
+            config.chrome,
+            auto_launch=config.auto_launch_chrome,
+            wait_seconds=config.chrome_wait_seconds,
+        )
     except Exception as exc:
         log_info(
             "Could not connect to Chrome debug port.\n"
+            "NOTE: Normal Chrome icon se khola browser kaam NAHI karta.\n"
             "1) Task Manager se saare Chrome band karo\n"
             "2) Alag CMD kholo aur run karo: scripts\\start_chrome_debug.bat\n"
             "3) Chrome mein profile select karo\n"

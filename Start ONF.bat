@@ -7,12 +7,11 @@ echo ============================================================
 echo   Own Network Fetcher (ONF)
 echo ============================================================
 echo.
-echo STEP 1 (ZAROORI): Pehle Chrome debug mode kholo — alag CMD window:
-echo   scripts\start_chrome_debug.bat
-echo   ^> Profile select karo, Chrome khula rehna chahiye
+echo IMPORTANT: Normal Chrome icon se khola browser kaam NAHI karega.
+echo ONF ko Chrome DEBUG mode chahiye (port 9222).
 echo.
-echo STEP 2: Neeche mode select karo (1 ya 2)
-echo   Band karne ke liye: Ctrl+C
+echo STEP 1: Chrome debug start hoga automatically agar port ready na ho.
+echo STEP 2: Neeche mode select karo (1 ya 2). Band karne ke liye: Ctrl+C
 echo ============================================================
 echo.
 
@@ -25,11 +24,9 @@ if not exist onf.exe (
 echo Checking Chrome debug port 9222...
 powershell -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.0.1:9222/json/version' -UseBasicParsing -TimeoutSec 3).StatusCode | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
 if errorlevel 1 (
-  echo.
-  echo [WARNING] Port 9222 par Chrome debug nahi mila!
-  echo Pehle scripts\start_chrome_debug.bat chalao, phir yahan aao.
-  echo.
-  set /p READY="Chrome debug start ho gaya? Enter dabao to continue: "
+  echo Port 9222 par debug Chrome nahi mila.
+  echo Debug Chrome start ho raha hai ^(saara normal Chrome band hoga^)...
+  call scripts\start_chrome_debug.bat --no-pause
 ) else (
   echo Chrome debug port OK.
 )
