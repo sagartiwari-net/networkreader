@@ -20,6 +20,7 @@ start "" "%CHROME%" --remote-debugging-port=9222 --remote-allow-origins=* --user
 
 echo.
 echo Chrome khul gaya. Profile select karo.
-echo Test URL: http://127.0.0.1:9222/json/version
+echo Test URL browser mein kholo: http://127.0.0.1:9222/json/version
+echo Agar JSON dikhe to debug mode sahi hai — ab Start ONF.bat chalao.
 echo.
 pause

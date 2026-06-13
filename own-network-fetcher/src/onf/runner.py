@@ -14,9 +14,11 @@ def run_capture(config: RunConfig) -> int:
     except Exception as exc:
         log_info(
             "Could not connect to Chrome debug port.\n"
-            "1) Close ALL Chrome windows (Task Manager check karo)\n"
-            "2) Run: ..\\scripts\\start_chrome_debug.bat\n"
-            "3) Profile select karo, phir onf.exe dubara chalao\n"
+            "1) Task Manager se saare Chrome band karo\n"
+            "2) Alag CMD kholo aur run karo: scripts\\start_chrome_debug.bat\n"
+            "3) Chrome mein profile select karo\n"
+            "4) Browser mein test karo: http://127.0.0.1:9222/json/version\n"
+            "5) Phir Start ONF.bat dubara chalao\n"
             f"Details: {exc}"
         )
         return 1
