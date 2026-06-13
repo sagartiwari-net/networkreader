@@ -47,7 +47,7 @@ class RunConfig(BaseModel):
     flush_interval_s: float = 2.0
     auto_launch_chrome: bool = True
     force_restart_chrome: bool = False
-    chrome_wait_seconds: float = 25.0
+    chrome_wait_seconds: float = 45.0
 
     @property
     def session_dir(self) -> Path:

@@ -108,11 +108,26 @@ def kill_chrome_processes() -> None:
         return
     log_info("Chrome band ho raha hai...")
     subprocess.run(
-        ["taskkill", "/F", "/IM", "chrome.exe"],
+        ["taskkill", "/F", "/T", "/IM", "chrome.exe"],
         capture_output=True,
         check=False,
     )
-    time.sleep(1.5)
+    time.sleep(1.0)
+
+
+def wait_until_chrome_stopped(*, timeout_s: float = 20.0) -> bool:
+    if sys.platform != "win32":
+        return True
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if not is_chrome_running():
+            time.sleep(0.8)
+            if not is_chrome_running():
+                return True
+        time.sleep(0.5)
+    kill_chrome_processes()
+    time.sleep(2.0)
+    return not is_chrome_running()
 
 
 def launch_chrome_debug(chrome: ChromeConfig) -> subprocess.Popen | None:
@@ -127,23 +142,28 @@ def launch_chrome_debug(chrome: ChromeConfig) -> subprocess.Popen | None:
         str(chrome_exe),
         f"--remote-debugging-port={chrome.port}",
         "--remote-allow-origins=*",
-        f'--user-data-dir={profile_root}',
-        f'--profile-directory={profile_directory}',
+        f"--user-data-dir={profile_root}",
+        f"--profile-directory={profile_directory}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--new-window",
+        "about:blank",
     ]
     log_info(f"Chrome start ({launch_mode}): {profile_display_name(profile_directory)}")
     log_info(f"Profile folder: {profile_directory}")
 
-    creationflags = 0
     if sys.platform == "win32":
-        creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen(
+            ["cmd", "/c", "start", ""] + args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return None
 
     return subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=creationflags,
     )
 
 
@@ -161,7 +181,7 @@ def ensure_chrome_debug(
     *,
     auto_launch: bool = True,
     force_restart: bool = False,
-    launch_wait_s: float = 25.0,
+    launch_wait_s: float = 45.0,
 ) -> None:
     """Connect to debug port; launch only when Chrome is not already debug-ready."""
     if is_debug_port_ready(chrome):
@@ -172,6 +192,10 @@ def ensure_chrome_debug(
         if force_restart:
             log_info("Force restart ON — Chrome band karke dubara khulega.")
             kill_chrome_processes()
+            if not wait_until_chrome_stopped():
+                raise RuntimeError(
+                    "Chrome poori tarah band nahi hua (Task Manager se saare chrome.exe band karo, phir dubara try karo)."
+                )
         elif auto_launch:
             raise RuntimeError(
                 "Chrome pehle se chal raha hai lekin debug port 9222 par nahi.\n"
@@ -191,12 +215,19 @@ def ensure_chrome_debug(
     elif not auto_launch:
         raise RuntimeError("Debug port ready nahi. scripts\\launch_chrome_profile.bat chalao.")
 
-    if not is_chrome_running():
+    if not is_debug_port_ready(chrome):
         launch_chrome_debug(chrome)
 
     if wait_for_debug_port(chrome, timeout_s=launch_wait_s):
         log_info("Chrome debug port ready.")
         return
+
+    if is_chrome_running() and not is_debug_port_ready(chrome):
+        raise RuntimeError(
+            "Chrome khula hai lekin debug port 9222 par nahi.\n"
+            "Task Manager se saara Chrome band karo, phir ONF dubara chalao aur Y dabao.\n"
+            f"Test URL: {chrome.cdp_url}/json/version"
+        )
 
     if chrome.clone_installed_profile:
         raise RuntimeError("Clone profile ke saath bhi debug port start nahi hua.")
