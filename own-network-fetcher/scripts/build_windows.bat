@@ -22,8 +22,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
+if not exist dist\onf.exe (
+  echo dist\onf.exe not found after build.
+  pause
+  exit /b 1
+)
+
 if not exist releases mkdir releases
-for /f "tokens=*" %%v in ('python -c "from pathlib import Path; import re; t=Path('src/onf/__init__.py').read_text(); print(re.search(r'__version__ = \"(.+?)\"', t).group(1))"') do set VERSION=%%v
+for /f "delims=" %%v in ('python scripts\get_version.py') do set VERSION=%%v
 
 copy /y dist\onf.exe releases\onf-%VERSION%.exe
 copy /y dist\onf.exe releases\onf.exe
@@ -33,6 +39,7 @@ copy /y dist\onf.exe ..\onf-%VERSION%.exe
 echo.
 echo ========================================
 echo Build complete:
+echo   dist\onf.exe
 echo   ..\onf.exe              ^<- ROOT folder (copy yahi se)
 echo   ..\onf-%VERSION%.exe
 echo   releases\onf.exe
