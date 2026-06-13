@@ -4,29 +4,28 @@ title Own Network Fetcher
 cd /d "%~dp0"
 
 echo ============================================================
-echo   Own Network Fetcher (ONF)
+echo   Own Network Fetcher (ONF) v0.3
 echo ============================================================
 echo.
-echo IMPORTANT: Real Chrome profile use hoga (extensions/login same rahenge).
-echo ONF start hote hi profile select kar sakte ho.
-echo Band karne ke liye: Ctrl+C
+echo FAST WORKFLOW (Friend jaisa):
+echo   1) Pehle: scripts\launch_chrome_profile.bat  ^(ek baar^)
+echo   2) Phir:  Start ONF.bat  ^(turant connect^)
+echo.
+echo ONF aapka Chrome automatically BAND nahi karega.
 echo ============================================================
 echo.
 
 if not exist onf.exe (
-  echo ERROR: onf.exe is folder mein nahi mila.
-  echo Pehle build chalao: own-network-fetcher\scripts\build_windows.bat
+  echo ERROR: onf.exe nahi mila. Build: own-network-fetcher\scripts\build_windows.bat
   goto :done
 )
 
-echo Checking Chrome debug port 9222...
-powershell -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.0.1:9222/json/version' -UseBasicParsing -TimeoutSec 3).StatusCode | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
+powershell -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.0.1:9222/json/version' -UseBasicParsing -TimeoutSec 2).StatusCode | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
 if errorlevel 1 (
-  echo Port 9222 par debug Chrome nahi mila.
-  echo Debug Chrome start ho raha hai ^(saara normal Chrome band hoga^)...
-  call scripts\start_chrome_debug.bat --no-pause
-) else (
-  echo Chrome debug port OK.
+  echo [INFO] Debug port 9222 nahi mila.
+  echo Pehle scripts\launch_chrome_profile.bat chalao ^(recommended^).
+  echo.
+  set /p READY="Launch script chala liya? Enter dabao: "
 )
 echo.
 
@@ -46,7 +45,7 @@ if "%MODE%"=="2" (
   goto :after_run
 )
 
-echo Invalid choice. Please run again and enter 1 or 2.
+echo Invalid choice.
 goto :done
 
 :after_run

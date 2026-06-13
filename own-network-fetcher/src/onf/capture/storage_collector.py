@@ -77,18 +77,20 @@ INDEXED_DB_DUMP_JS = """
 """
 
 
-def origin_of(url: str) -> str | None:
+def security_origin(url: str) -> str | None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return None
     port = parsed.port
-    if port and not ((parsed.scheme == "http" and port == 80) or (parsed.scheme == "https" and port == 443)):
+    if port and not (
+        (parsed.scheme == "http" and port == 80) or (parsed.scheme == "https" and port == 443)
+    ):
         return f"{parsed.scheme}://{parsed.hostname}:{port}"
     return f"{parsed.scheme}://{parsed.hostname}"
 
 
 class StorageCollector:
-    """Sync CDP helper used during session finalize."""
+    """Sync CDP helper — prefers DOMStorage over Runtime during live capture."""
 
     def __init__(
         self,
@@ -100,6 +102,7 @@ class StorageCollector:
         self.ws = ws
         self._send = send
         self._timeout_s = timeout_s
+        self._dom_storage_enabled: set[str] = set()
 
     def _command(
         self,
@@ -135,11 +138,58 @@ class StorageCollector:
                 return list(cookies)
         return []
 
-    def evaluate(self, session_id: str, expression: str, *, await_promise: bool = False) -> Any:
+    def _ensure_dom_storage(self, session_id: str) -> None:
+        if session_id in self._dom_storage_enabled:
+            return
+        self._command("DOMStorage.enable", session_id=session_id)
+        self._dom_storage_enabled.add(session_id)
+
+    def _dom_storage_items(
+        self,
+        session_id: str,
+        *,
+        origin: str,
+        is_local_storage: bool,
+    ) -> dict[str, str]:
+        self._ensure_dom_storage(session_id)
+        result = self._command(
+            "DOMStorage.getDOMStorageItems",
+            {
+                "storageId": {
+                    "securityOrigin": origin,
+                    "isLocalStorage": is_local_storage,
+                }
+            },
+            session_id=session_id,
+        )
+        entries = result.get("entries", [])
+        items: dict[str, str] = {}
+        for entry in entries:
+            if isinstance(entry, list) and len(entry) >= 2:
+                items[str(entry[0])] = str(entry[1])
+        return items
+
+    def collect_dom_storage_via_dom_storage(
+        self,
+        session_id: str,
+        origin: str,
+    ) -> tuple[dict[str, str], dict[str, str]]:
         try:
-            self._command("Runtime.enable", session_id=session_id)
+            local_storage = self._dom_storage_items(
+                session_id,
+                origin=origin,
+                is_local_storage=True,
+            )
+            session_storage = self._dom_storage_items(
+                session_id,
+                origin=origin,
+                is_local_storage=False,
+            )
+            return local_storage, session_storage
         except Exception:
-            pass
+            return {}, {}
+
+    def evaluate(self, session_id: str, expression: str, *, await_promise: bool = False) -> Any:
         result: dict[str, Any] = {}
         try:
             result = self._command(
@@ -151,11 +201,8 @@ class StorageCollector:
                 },
                 session_id=session_id,
             )
-        finally:
-            try:
-                self._command("Runtime.disable", session_id=session_id)
-            except Exception:
-                pass
+        except Exception:
+            return None
         remote = result.get("result", {})
         if remote.get("type") == "undefined":
             return None
@@ -163,7 +210,15 @@ class StorageCollector:
             return remote["value"]
         return None
 
-    def collect_dom_storage(self, session_id: str) -> tuple[dict[str, str], dict[str, str]]:
+    def collect_dom_storage(self, session_id: str, *, origin: str | None = None) -> tuple[dict[str, str], dict[str, str]]:
+        if origin:
+            local_storage, session_storage = self.collect_dom_storage_via_dom_storage(
+                session_id,
+                origin,
+            )
+            if local_storage or session_storage:
+                return local_storage, session_storage
+
         raw = self.evaluate(session_id, STORAGE_EVAL_JS)
         if not isinstance(raw, dict):
             return {}, {}

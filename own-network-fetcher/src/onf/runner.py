@@ -13,19 +13,11 @@ def run_capture(config: RunConfig) -> int:
         ws_url = get_browser_ws_url(
             config.chrome,
             auto_launch=config.auto_launch_chrome,
+            force_restart=config.force_restart_chrome,
             wait_seconds=config.chrome_wait_seconds,
         )
     except Exception as exc:
-        log_info(
-            "Could not connect to Chrome debug port.\n"
-            "NOTE: Normal Chrome icon se khola browser kaam NAHI karta.\n"
-            "1) Task Manager se saare Chrome band karo\n"
-            "2) Alag CMD kholo aur run karo: scripts\\start_chrome_debug.bat\n"
-            "3) Chrome mein profile select karo\n"
-            "4) Browser mein test karo: http://127.0.0.1:9222/json/version\n"
-            "5) Phir Start ONF.bat dubara chalao\n"
-            f"Details: {exc}"
-        )
+        log_info(f"Could not connect to Chrome debug port.\n{exc}")
         return 1
 
     log_info(f"Connected to Chrome CDP")

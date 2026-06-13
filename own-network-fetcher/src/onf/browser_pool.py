@@ -15,7 +15,8 @@ def get_browser_ws_url(
     chrome: ChromeConfig,
     *,
     auto_launch: bool = True,
-    wait_seconds: float = 90.0,
+    force_restart: bool = False,
+    wait_seconds: float = 25.0,
 ) -> str:
     version_url = f"{chrome.cdp_url}/json/version"
     log_info(f"Checking Chrome debug endpoint: {version_url}")
@@ -24,7 +25,7 @@ def get_browser_ws_url(
         ensure_chrome_debug(
             chrome,
             auto_launch=auto_launch,
-            initial_wait_s=min(wait_seconds, 8.0),
+            force_restart=force_restart,
             launch_wait_s=wait_seconds,
         )
 

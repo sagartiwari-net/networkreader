@@ -8,12 +8,8 @@ from datetime import datetime
 from pathlib import Path
 
 from onf import __version__
-from onf.chrome_launcher import (
-    format_profile_menu,
-    profile_directory_from_menu_choice,
-    profile_display_name,
-)
-from onf.chrome_profiles import list_installed_profiles
+from onf.chrome_launcher import format_profile_menu, profile_directory_from_menu_choice
+from onf.chrome_profiles import list_installed_profiles, profile_display_name
 from onf.config import CaptureMode, ChromeConfig, RunConfig
 from onf.logging_utils import log_info
 from onf.paths import configure_frozen_runtime, default_output_dir, is_frozen
@@ -92,6 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not auto-launch Chrome debug mode when port 9222 is not ready.",
     )
     parser.add_argument(
+        "--force-restart-chrome",
+        action="store_true",
+        help="Chrome band karke dubara debug mode mein kholo (default: band nahi karega).",
+    )
+    parser.add_argument(
         "--profile-directory",
         default=None,
         help='Installed Chrome profile folder, e.g. "Default" or "Profile 1".',
@@ -130,13 +131,8 @@ def print_startup_banner(config: RunConfig) -> None:
     log_info(f"Task ID      : {config.task_id}")
     log_info(f"Output folder: {config.session_dir}")
     log_info("-" * 56)
-    if config.auto_launch_chrome:
-        log_info(
-            "Real Chrome profile use hoga — extensions/login wahi profile se aayenge."
-        )
-    else:
-        log_info("Pehle Chrome debug mode mein kholo:")
-        log_info("  scripts\\start_chrome_debug.bat")
+    if config.auto_launch_chrome and not config.force_restart_chrome:
+        log_info("Tip: pehle scripts\\launch_chrome_profile.bat chalao — ONF turant connect karega.")
     log_info("Capture ke liye Ctrl+C se band karo.")
     log_info("=" * 56)
 
@@ -172,6 +168,7 @@ def build_config(args: argparse.Namespace) -> RunConfig:
         include_sensitive=args.include_sensitive,
         flush_interval_s=args.flush_interval,
         auto_launch_chrome=not args.no_auto_chrome,
+        force_restart_chrome=args.force_restart_chrome,
     )
 
 

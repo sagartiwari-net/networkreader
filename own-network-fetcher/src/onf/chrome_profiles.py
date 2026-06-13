@@ -51,6 +51,13 @@ def list_installed_profiles(user_data_dir: Path | None = None) -> list[dict[str,
     return sorted(profiles.values(), key=sort_key)
 
 
+def profile_display_name(profile_directory: str, user_data_dir: Path | None = None) -> str:
+    for item in list_installed_profiles(user_data_dir):
+        if item["directory"] == profile_directory:
+            return item["name"]
+    return profile_directory
+
+
 def resolve_profile_directory(name: str | None, user_data_dir: Path | None = None) -> str:
     chosen = (name or "Default").strip() or "Default"
     root = user_data_dir or installed_user_data_dir()

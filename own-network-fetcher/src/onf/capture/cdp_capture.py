@@ -15,7 +15,7 @@ from onf.capture.cookies import (
     parse_set_cookie_headers,
     safe_domain,
 )
-from onf.capture.storage_collector import StorageCollector
+from onf.capture.storage_collector import StorageCollector, security_origin
 from onf.config import RunConfig
 from onf.export.cookie_bundle import events_to_cdp_cookies, merge_cdp_cookies
 from onf.logging_utils import log_info, log_save, log_skip
@@ -64,6 +64,33 @@ class CDPCapture:
         self._stop = False
         self._last_flush = time.time()
         self._last_export_sync = 0.0
+        self._last_storage_sync = 0.0
+        self._ws: Any | None = None
+        self.requested_target_attach: set[str] = set()
+
+    def _capture_target_types(self) -> set[str]:
+        if self.config.cookie_export:
+            return {"page"}
+        return CAPTURE_TARGET_TYPES
+
+    def _session_for_domain(self, domain: str) -> str | None:
+        sid = self.page_session_by_domain.get(domain)
+        if sid:
+            return sid
+        for session_id, url in self.page_sessions.items():
+            if safe_domain(url) == domain:
+                return session_id
+        return None
+
+    def _attach_target_if_supported(self, ws: Any, target_info: dict[str, Any]) -> None:
+        target_id = target_info.get("targetId")
+        target_type = target_info.get("type")
+        if not target_id or target_type not in self._capture_target_types():
+            return
+        if target_id in self.requested_target_attach:
+            return
+        self.requested_target_attach.add(target_id)
+        self._send(ws, "Target.attachToTarget", {"targetId": target_id, "flatten": True})
 
     def _send(
         self,
@@ -272,6 +299,10 @@ class CDPCapture:
         params = message.get("params", {})
         session_id = message.get("sessionId", "")
 
+        if method == "Target.targetCreated":
+            self._attach_target_if_supported(ws, params.get("targetInfo", {}))
+            return
+
         if method == "Target.attachedToTarget":
             sid = params.get("sessionId")
             target_info = params.get("targetInfo", {})
@@ -280,11 +311,10 @@ class CDPCapture:
             target_id = target_info.get("targetId", "")
             if not sid:
                 return
-            if target_type not in CAPTURE_TARGET_TYPES:
+            if target_type not in self._capture_target_types():
                 self._send(ws, "Target.detachFromTarget", {"sessionId": sid})
                 return
             if sid in self.attached_sessions or target_id in self.attached_target_ids:
-                self._send(ws, "Target.detachFromTarget", {"sessionId": sid})
                 return
             self.attached_sessions.add(sid)
             self.session_target_type[sid] = target_type
@@ -447,6 +477,9 @@ class CDPCapture:
             self._write_full_network_record(key, body)
         elif cmd == "Storage.getCookies":
             self.session.cookie_jar_snapshot = message.get("result", {}).get("cookies", [])
+        elif cmd == "Target.getTargets":
+            for target_info in message.get("result", {}).get("targetInfos", []):
+                self._attach_target_if_supported(ws, target_info)
 
     def _collect_export_referers(self) -> dict[str, str]:
         referers = dict(self.primary_sites)
@@ -482,17 +515,24 @@ class CDPCapture:
         if not referers:
             return
 
+        active_ws = ws or self._ws
         jar = list(self.session.cookie_jar_snapshot)
         collector: StorageCollector | None = None
-        if collect_storage and ws is not None:
-            collector = StorageCollector(ws, self._send, timeout_s=12.0)
-            try:
-                fresh = collector.get_cookies()
-                if fresh:
-                    jar = fresh
-                    self.session.cookie_jar_snapshot = fresh
-            except Exception as exc:
-                log_skip(f"Cookie jar refresh skipped: {exc}")
+        now = time.time()
+        want_dom_storage = collect_storage or (
+            self.config.cookie_export and active_ws is not None and now - self._last_storage_sync >= 5.0
+        )
+
+        if active_ws is not None and (collect_storage or want_dom_storage):
+            collector = StorageCollector(active_ws, self._send, timeout_s=8.0)
+            if collect_storage:
+                try:
+                    fresh = collector.get_cookies()
+                    if fresh:
+                        jar = fresh
+                        self.session.cookie_jar_snapshot = fresh
+                except Exception as exc:
+                    log_skip(f"Cookie jar refresh skipped: {exc}")
 
         site_count = 0
         file_count = 0
@@ -505,12 +545,17 @@ class CDPCapture:
             local_storage: dict[str, str] = {}
             session_storage: dict[str, str] = {}
             indexed_db: dict[str, Any] = {}
-            sid = self.page_session_by_domain.get(domain)
-            if collector and sid:
+            sid = self._session_for_domain(domain)
+            origin = security_origin(referer)
+            if collector and sid and origin and want_dom_storage:
                 try:
-                    local_storage, session_storage = collector.collect_dom_storage(sid)
+                    local_storage, session_storage = collector.collect_dom_storage(
+                        sid,
+                        origin=origin,
+                    )
                 except Exception as exc:
                     log_skip(f"DOM storage skipped for {referer}: {exc}")
+            if collector and sid and collect_storage:
                 try:
                     indexed_db = collector.collect_indexed_db(sid)
                 except Exception as exc:
@@ -537,6 +582,9 @@ class CDPCapture:
                 for path in paths:
                     log_info(f"  saved {path.name}")
 
+        if want_dom_storage and not collect_storage:
+            self._last_storage_sync = now
+
         if log_writes:
             log_info(f"Cookie export complete: {site_count} site folder(s), {file_count} file(s)")
 
@@ -551,7 +599,7 @@ class CDPCapture:
         now = time.time()
         if now - self._last_flush >= self.config.flush_interval_s:
             if self.config.cookie_export and now - self._last_export_sync >= self.config.flush_interval_s:
-                self._sync_site_cookie_files(log_writes=False)
+                self._sync_site_cookie_files(self._ws, log_writes=False)
                 self._last_export_sync = now
             self.writer.write_session(self.session)
             self._last_flush = now
@@ -607,9 +655,11 @@ class CDPCapture:
         )
 
         try:
-            ws = websocket.create_connection(self.ws_url, timeout=3, suppress_origin=True)
+            ws = websocket.create_connection(self.ws_url, timeout=1.0, suppress_origin=True)
         except Exception as exc:
             raise RuntimeError(f"CDP WebSocket connect failed: {exc}") from exc
+
+        self._ws = ws
 
         def _handle_stop(*_args: Any) -> None:
             self._stop = True
@@ -626,9 +676,11 @@ class CDPCapture:
             "Target.setAutoAttach",
             {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
         )
+        self._send(ws, "Target.getTargets")
         self.writer.write_session(self.session)
         log_info("Capturing — browse in Chrome. Press Ctrl+C to stop.")
-        log_info("Cookie files har site folder mein live update hongi (Ctrl+C par final storage snapshot).")
+        log_info("Sirf Network CDP use ho raha hai (Friend jaisa — kam detection).")
+        log_info("localStorage live update + IndexedDB Ctrl+C par save hoga.")
 
         try:
             while not self._stop:
