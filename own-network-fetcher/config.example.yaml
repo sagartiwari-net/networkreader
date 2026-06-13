@@ -1,0 +1,22 @@
+# Own Network Fetcher — example config (Phase 2+)
+
+output_dir: ./captures
+
+# capture_mode: cookie_only   # default — sirf cookie traffic
+# capture_mode: full          # --all-requests jaisa
+
+chrome:
+  instances:
+    - port: 9222
+      headless: false
+    # - port: 9223
+    #   headless: true
+
+limits:
+  max_tasks_per_chrome: 4
+  max_total_tasks: 10
+
+# remote_sync:  # Phase 4
+#   enabled: false
+#   url: https://your-server.com/api/v1
+#   api_key: ${REMOTE_API_KEY}

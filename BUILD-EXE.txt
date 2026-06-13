@@ -1,0 +1,40 @@
+ONF — .exe file kahan milegi?
+================================
+
+ABHI ROOT ME .EXE NAHI HAI — ye normal hai.
+
+Kyun?
+------
+Aap Mac par ho. Yahan PyInstaller ne sirf Mac app banayi:
+  own-network-fetcher/dist/onf   (Mac binary, .exe NAHI)
+
+Windows .exe SIRF Windows/RDP par ban sakti hai.
+
+
+.exe kaise banegi?
+------------------
+1. Is poora "Network Reader" folder RDP (Windows) par copy karo
+   YA sirf own-network-fetcher folder
+
+2. Windows CMD kholo:
+
+   cd own-network-fetcher
+   scripts\build_windows.bat
+
+3. Build ke baad ye files banengi:
+
+   Network Reader\onf.exe          <-- YAHAN (root) copy karo
+   Network Reader\onf-0.1.0-phase1.exe
+
+4. onf.exe ko RDP par jahan test karna ho wahan paste karo
+
+
+Abhi Mac par test (bina .exe):
+------------------------------
+cd own-network-fetcher
+.venv/bin/python -m onf
+
+(Chrome debug port 9222 par hona chahiye)
+
+
+Build time: ~2-5 minute (pehli baar)

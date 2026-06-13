@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+captures/
+.captures/
+sessions/
+*.log
+.env
+.DS_Store
+
+# Built executables — README rakho, binaries git mein nahi
+releases/*.exe

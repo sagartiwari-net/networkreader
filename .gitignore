@@ -1,0 +1,33 @@
+# Built Windows executable — build on Windows via own-network-fetcher/scripts/build_windows.bat
+onf.exe
+onf-*.exe
+
+# Capture output (sensitive — never commit)
+captures/
+**/captures/
+sessions/
+**/sessions/
+
+# Friend prototype captured data (contains real cookies)
+Friend/network_requests.txt
+Friend/domain_sessions/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# OS / env
+.DS_Store
+.env
+*.log
+
+# Built binaries in subfolders
+releases/*.exe
+own-network-fetcher/dist/
+own-network-fetcher/build/
+own-network-fetcher/.venv/
