@@ -37,12 +37,16 @@ Launcher: `Start ONF.bat` ya `onf.exe` double-click (menu dikhega).
 ```
 captures/sessions/{task_id}/
 ├── session.json
-├── cookies.ndjson              # live cookie events (option 2)
-├── exports/
-│   └── jasper.ai.json          # final cookie bundle (option 2, on stop)
-└── by_site/
-    └── app.jasper.ai/
-        └── network.ndjson      # detailed traffic (option 1)
+├── cookies.ndjson              # live cookie events (during capture)
+├── app.buzzsumo.com/           # one folder per website you opened
+│   ├── cookies.http.json       # HTTP cookies only (your export format)
+│   ├── localStorage.json
+│   ├── sessionStorage.json     # if present
+│   ├── indexedDB.json          # if present
+│   ├── cookies.all.json        # mixed — all types in one file
+│   └── network.ndjson          # option 1 — full network scan
+└── buzzsumo.1clkaccess.store/  # second site = second folder
+    └── ...
 ```
 
 ### Cookie export JSON contract

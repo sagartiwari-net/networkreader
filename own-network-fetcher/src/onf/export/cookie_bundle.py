@@ -53,7 +53,7 @@ def cookies_for_referer(all_cookies: list[dict[str, Any]], referer: str) -> list
 def build_export_payload(
     *,
     referer: str,
-    http_cookies: list[dict[str, Any]],
+    http_cookies: list[dict[str, Any]] | None = None,
     local_storage: dict[str, str] | None = None,
     session_storage: dict[str, str] | None = None,
     indexed_db: dict[str, Any] | None = None,
@@ -61,10 +61,11 @@ def build_export_payload(
     included: list[str] = []
     payload: dict[str, Any] = {"referer": referer, "includedFormats": included}
 
-    cookies = cookies_for_referer(http_cookies, referer)
-    if cookies:
-        included.append("cookies")
-        payload["cookies"] = cookies
+    if http_cookies is not None:
+        cookies = cookies_for_referer(http_cookies, referer)
+        if cookies:
+            included.append("cookies")
+            payload["cookies"] = cookies
 
     storage_block: dict[str, Any] = {}
     if local_storage:
@@ -82,3 +83,36 @@ def build_export_payload(
 
     payload["includedFormats"] = included
     return payload
+
+
+def build_http_cookie_payload(referer: str, http_cookies: list[dict[str, Any]]) -> dict[str, Any]:
+    return build_export_payload(referer=referer, http_cookies=http_cookies)
+
+
+def build_local_storage_payload(referer: str, local_storage: dict[str, str]) -> dict[str, Any]:
+    return build_export_payload(referer=referer, local_storage=local_storage)
+
+
+def build_session_storage_payload(referer: str, session_storage: dict[str, str]) -> dict[str, Any]:
+    return build_export_payload(referer=referer, session_storage=session_storage)
+
+
+def build_indexed_db_payload(referer: str, indexed_db: dict[str, Any]) -> dict[str, Any]:
+    return build_export_payload(referer=referer, indexed_db=indexed_db)
+
+
+def build_all_cookie_payload(
+    *,
+    referer: str,
+    http_cookies: list[dict[str, Any]],
+    local_storage: dict[str, str] | None = None,
+    session_storage: dict[str, str] | None = None,
+    indexed_db: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_export_payload(
+        referer=referer,
+        http_cookies=http_cookies,
+        local_storage=local_storage,
+        session_storage=session_storage,
+        indexed_db=indexed_db,
+    )

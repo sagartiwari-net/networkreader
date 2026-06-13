@@ -17,7 +17,6 @@ from onf.capture.cookies import (
 )
 from onf.capture.storage_collector import StorageCollector
 from onf.config import RunConfig
-from onf.export.cookie_bundle import build_export_payload
 from onf.logging_utils import log_info, log_save, log_skip
 from onf.models.session import CookieEvent, FullNetworkRecord, NetworkEvent, SessionModel
 from onf.storage.json_writer import SessionWriter
@@ -395,14 +394,19 @@ class CDPCapture:
             if not url.startswith(("http://", "https://")):
                 continue
             domain = safe_domain(url)
+            if domain in {"127.0.0.1", "localhost", "unknown"}:
+                continue
             referers[domain] = url
             session_for_domain[domain] = sid
 
         if not referers:
             for event in self.session.cookie_events:
+                if event.domain in {"127.0.0.1", "localhost", "unknown"}:
+                    continue
                 referers.setdefault(event.domain, event.url)
 
-        export_count = 0
+        site_count = 0
+        file_count = 0
         for domain, referer in referers.items():
             local_storage: dict[str, str] = {}
             session_storage: dict[str, str] = {}
@@ -418,20 +422,24 @@ class CDPCapture:
                 except Exception as exc:
                     log_skip(f"IndexedDB skipped for {referer}: {exc}")
 
-            payload = build_export_payload(
+            paths = self.writer.write_site_cookie_exports(
+                domain=domain,
                 referer=referer,
                 http_cookies=all_cookies,
-                local_storage=local_storage or None,
-                session_storage=session_storage or None,
-                indexed_db=indexed_db or None,
+                local_storage=local_storage,
+                session_storage=session_storage,
+                indexed_db=indexed_db,
             )
-            if not payload.get("includedFormats"):
+            if not paths:
                 continue
-            path = self.writer.write_cookie_export(domain, payload)
-            export_count += 1
-            log_info(f"Cookie export saved: {path}")
+            site_count += 1
+            file_count += len(paths)
+            site_folder = self.writer.site_dir(domain)
+            log_info(f"Site export: {site_folder}")
+            for path in paths:
+                log_info(f"  saved {path.name}")
 
-        log_info(f"Cookie export files: {export_count} site(s) in {self.writer.exports_dir}")
+        log_info(f"Cookie export complete: {site_count} site folder(s), {file_count} file(s)")
 
     def _maybe_flush(self) -> None:
         now = time.time()
@@ -454,14 +462,14 @@ class CDPCapture:
                 f"skipped={summary.requests_skipped}, "
                 f"seen={summary.total_requests_seen}"
             )
-            log_info(f"Exports folder: {self.writer.exports_dir}")
+            log_info(f"Site folders: {self.writer.sites_root}")
         else:
             log_info(
                 "Stopped — "
                 f"network_events={summary.network_events_saved}, "
                 f"seen={summary.total_requests_seen}"
             )
-            log_info(f"Per-site network folder: {self.writer.by_site_dir}")
+            log_info(f"Network saved per site as network.ndjson under {self.writer.sites_root}")
         log_info(f"Session saved: {self.writer.session_path}")
 
     def run(self) -> None:
