@@ -175,6 +175,7 @@ def ensure_chrome_debug(
         elif auto_launch:
             raise RuntimeError(
                 "Chrome pehle se chal raha hai lekin debug port 9222 par nahi.\n"
+                "Mode 1 (full network) aur Mode 2 (cookies) DONO ke liye debug port zaroori hai.\n"
                 "ONF aapka Chrome automatically band NAHI karega.\n\n"
                 "Option A (recommended, fast):\n"
                 "  1) Saara Chrome band karo (Task Manager)\n"

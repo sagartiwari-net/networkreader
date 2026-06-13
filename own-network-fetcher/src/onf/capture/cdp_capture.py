@@ -488,8 +488,11 @@ class CDPCapture:
                 return
             key = (session_id, request_id)
             headers = params.get("headers", {}) or {}
+            meta = self.response_meta.setdefault(key, {})
+            merged = dict(meta.get("headers", {}))
+            merged.update(headers)
+            meta["headers"] = merged
             state = self.pending_by_key.get(key, {})
-            meta = self.response_meta.get(key, {})
             url = meta.get("url") or state.get("url") or ""
             method_name = state.get("method") or "GET"
             status = meta.get("status")
@@ -524,6 +527,9 @@ class CDPCapture:
         if cmd == "Network.getResponseBody":
             key = self.pending_body_requests.pop(msg_id, None)
             if not key:
+                return
+            if message.get("error"):
+                self._write_full_network_record(key, None)
                 return
             result = message.get("result", {})
             body = result.get("body")
@@ -770,7 +776,20 @@ class CDPCapture:
             self.writer.write_session(self.session)
             self._last_flush = now
 
+    def _flush_pending_full_network_records(self) -> None:
+        if not self.config.full_network:
+            return
+        for key, state in list(self.pending_by_key.items()):
+            if state.get("full_record_saved"):
+                continue
+            if key not in self.response_meta:
+                continue
+            self._write_full_network_record(key, None)
+
     def _finalize(self, ws: Any | None = None) -> None:
+        if self.config.full_network:
+            self._flush_pending_full_network_records()
+
         if ws is not None and self.config.cookie_export:
             if self._storage_queue:
                 self._storage_queue = {
@@ -855,10 +874,16 @@ class CDPCapture:
         self._send(ws, "Target.getTargets")
         self.writer.write_session(self.session)
         log_info("Capturing — browse in Chrome. Press Ctrl+C to stop.")
-        log_info("Sirf Network CDP use ho raha hai (Friend jaisa — kam detection).")
-        log_info(
-            "Cookies live update; localStorage/IndexedDB page load par save (debounced); Ctrl+C par final."
-        )
+        if self.config.cookie_export:
+            log_info("Sirf Network CDP use ho raha hai (Friend jaisa — kam detection).")
+            log_info(
+                "Cookies live update; localStorage/IndexedDB page load par save (debounced); Ctrl+C par final."
+            )
+        else:
+            log_info(
+                "Har API request save: method, URL, headers, postData, cookies, response status/body."
+            )
+            log_info("Output: per-site network.ndjson (Ctrl+C se band karo).")
 
         try:
             while not self._stop:

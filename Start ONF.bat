@@ -20,13 +20,25 @@ if not exist onf.exe (
   goto :done
 )
 
+:check_debug
 powershell -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.0.1:9222/json/version' -UseBasicParsing -TimeoutSec 2).StatusCode | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
-if errorlevel 1 (
-  echo [INFO] Debug port 9222 nahi mila.
-  echo Pehle scripts\launch_chrome_profile.bat chalao ^(recommended^).
-  echo.
-  set /p READY="Launch script chala liya? Enter dabao: "
-)
+if not errorlevel 1 goto :debug_ready
+
+echo.
+echo [WARN] Chrome debug port 9222 ready NAHI hai.
+echo Mode 1 aur Mode 2 DONO ke liye pehle Chrome debug mode mein hona zaroori hai.
+echo.
+echo   A = scripts\launch_chrome_profile.bat chalao ^(recommended^)
+echo   R = Dubara check karo
+echo   Q = Band karo
+echo.
+set /p ACTION="Choose A/R/Q: "
+if /i "%ACTION%"=="Q" goto :done
+if /i "%ACTION%"=="A" call "%~dp0scripts\launch_chrome_profile.bat"
+goto :check_debug
+
+:debug_ready
+echo [OK] Debug port 9222 ready — ONF connect kar sakta hai.
 echo.
 
 echo Select capture mode:
