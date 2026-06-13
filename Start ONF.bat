@@ -7,11 +7,9 @@ echo ============================================================
 echo   Own Network Fetcher (ONF)
 echo ============================================================
 echo.
-echo IMPORTANT: Normal Chrome icon se khola browser kaam NAHI karega.
-echo ONF ko Chrome DEBUG mode chahiye (port 9222).
-echo.
-echo STEP 1: Chrome debug start hoga automatically agar port ready na ho.
-echo STEP 2: Neeche mode select karo (1 ya 2). Band karne ke liye: Ctrl+C
+echo IMPORTANT: Real Chrome profile use hoga (extensions/login same rahenge).
+echo ONF start hote hi profile select kar sakte ho.
+echo Band karne ke liye: Ctrl+C
 echo ============================================================
 echo.
 

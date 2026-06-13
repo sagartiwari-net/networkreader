@@ -136,15 +136,26 @@ class StorageCollector:
         return []
 
     def evaluate(self, session_id: str, expression: str, *, await_promise: bool = False) -> Any:
-        result = self._command(
-            "Runtime.evaluate",
-            {
-                "expression": expression,
-                "returnByValue": True,
-                "awaitPromise": await_promise,
-            },
-            session_id=session_id,
-        )
+        try:
+            self._command("Runtime.enable", session_id=session_id)
+        except Exception:
+            pass
+        result: dict[str, Any] = {}
+        try:
+            result = self._command(
+                "Runtime.evaluate",
+                {
+                    "expression": expression,
+                    "returnByValue": True,
+                    "awaitPromise": await_promise,
+                },
+                session_id=session_id,
+            )
+        finally:
+            try:
+                self._command("Runtime.disable", session_id=session_id)
+            except Exception:
+                pass
         remote = result.get("result", {})
         if remote.get("type") == "undefined":
             return None

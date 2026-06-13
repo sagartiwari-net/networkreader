@@ -292,9 +292,7 @@ class CDPCapture:
                 self.attached_target_ids.add(target_id)
                 self.target_id_to_session[target_id] = sid
             self._send(ws, "Network.enable", session_id=sid)
-            self._send(ws, "Runtime.enable", session_id=sid)
             if target_type == "page":
-                self._send(ws, "Page.enable", session_id=sid)
                 self._register_primary_site(sid, target_url)
             log_info(f"Attached: {target_type} {target_url[:100]}")
             return

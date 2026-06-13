@@ -18,10 +18,24 @@ class CaptureMode(str, Enum):
 class ChromeConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 9222
+    profile_directory: str = "Default"
+    user_data_dir: Path | None = None
+    use_installed_profile: bool = True
+    clone_installed_profile: bool = False
+    clone_profile_dir: Path | None = None
 
     @property
     def cdp_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    def resolved_user_data_dir(self) -> Path | None:
+        if self.user_data_dir is not None:
+            return self.user_data_dir
+        if self.use_installed_profile or self.clone_installed_profile:
+            from onf.chrome_profiles import installed_user_data_dir
+
+            return installed_user_data_dir()
+        return None
 
 
 class RunConfig(BaseModel):
