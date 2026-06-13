@@ -15,6 +15,32 @@ def _same_site_value(raw: str | None) -> str | None:
     return raw
 
 
+def referer_host(referer: str) -> str:
+    return (urlparse(referer).hostname or "").lower()
+
+
+def cookie_domain_for_referer(referer: str) -> str:
+    host = referer_host(referer)
+    if not host:
+        return ""
+    parts = host.split(".")
+    if len(parts) >= 2:
+        return "." + ".".join(parts[-2:])
+    return host
+
+
+def cookie_matches_referer(cookie_domain: str, referer: str) -> bool:
+    host = referer_host(referer)
+    if not host:
+        return False
+    bare = str(cookie_domain).lower().lstrip(".")
+    if host == bare or host.endswith("." + bare):
+        return True
+    if str(cookie_domain).startswith(".") and host.endswith(str(cookie_domain).lower()):
+        return True
+    return False
+
+
 def cdp_cookie_to_export(entry: dict[str, Any]) -> dict[str, Any]:
     domain = entry.get("domain", "")
     expires = entry.get("expires", -1)
@@ -35,19 +61,106 @@ def cdp_cookie_to_export(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def cookies_for_referer(all_cookies: list[dict[str, Any]], referer: str) -> list[dict[str, Any]]:
-    host = (urlparse(referer).hostname or "").lower()
-    if not host:
+    if not all_cookies:
         return []
     matched: list[dict[str, Any]] = []
     for raw in all_cookies:
-        cookie_domain = str(raw.get("domain", "")).lower()
-        bare = cookie_domain.lstrip(".")
-        if host == bare or host.endswith("." + bare):
-            matched.append(cdp_cookie_to_export(raw))
-            continue
-        if cookie_domain.startswith(".") and host.endswith(cookie_domain):
+        if cookie_matches_referer(str(raw.get("domain", "")), referer):
             matched.append(cdp_cookie_to_export(raw))
     return matched
+
+
+def _attrs_get(attributes: dict[str, Any], key: str, default: Any = None) -> Any:
+    for attr_key, value in attributes.items():
+        if str(attr_key).lower() == key.lower():
+            return value
+    return default
+
+
+def _event_belongs_to_site(*, event_url: str, event_domain: str, site_domain: str) -> bool:
+    site = site_domain.lower()
+    if event_domain.lower() == site:
+        return True
+    host = (urlparse(event_url).hostname or "").lower()
+    return host == site
+
+
+def _set_cookie_to_cdp(raw: dict[str, Any], *, fallback_domain: str) -> dict[str, Any]:
+    attrs = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
+    domain = str(attrs.get("domain") or raw.get("domain") or fallback_domain)
+    expires_raw = _attrs_get(attrs, "expires")
+    session = expires_raw in (None, "", True) and _attrs_get(attrs, "max-age") is None
+    expires = -1 if session else -1
+    if expires_raw not in (None, "", True):
+        try:
+            expires = float(expires_raw)
+            session = expires <= 0
+        except (TypeError, ValueError):
+            session = True
+            expires = -1
+
+    same_site = _attrs_get(attrs, "samesite")
+    return {
+        "domain": domain,
+        "name": str(raw.get("name", "")),
+        "value": str(raw.get("value", "")),
+        "path": str(_attrs_get(attrs, "path") or raw.get("path") or "/"),
+        "expires": expires,
+        "httpOnly": bool(_attrs_get(attrs, "httponly", False)),
+        "secure": bool(_attrs_get(attrs, "secure", False)),
+        "session": session,
+        "sameSite": str(same_site) if same_site is not None else None,
+    }
+
+
+def events_to_cdp_cookies(events: list[Any], *, referer: str, site_domain: str) -> list[dict[str, Any]]:
+    """Rebuild CDP-shaped cookies from live capture events for one site folder."""
+    fallback_domain = cookie_domain_for_referer(referer) or site_domain
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for event in events:
+        event_url = getattr(event, "url", "")
+        event_domain = getattr(event, "domain", "")
+        if not _event_belongs_to_site(
+            event_url=event_url,
+            event_domain=event_domain,
+            site_domain=site_domain,
+        ):
+            continue
+
+        for raw in getattr(event, "cookies", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            if getattr(event, "event_type", "") == "set_cookie":
+                entry = _set_cookie_to_cdp(raw, fallback_domain=fallback_domain)
+            else:
+                entry = {
+                    "domain": fallback_domain,
+                    "name": str(raw.get("name", "")),
+                    "value": str(raw.get("value", "")),
+                    "path": "/",
+                    "expires": -1,
+                    "httpOnly": False,
+                    "secure": referer.startswith("https://"),
+                    "session": True,
+                    "sameSite": None,
+                }
+            if not entry.get("name"):
+                continue
+            key = (str(entry.get("domain", "")).lower(), str(entry["name"]))
+            merged[key] = entry
+
+    return list(merged.values())
+
+
+def merge_cdp_cookies(*sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for source in sources:
+        for raw in source:
+            key = (str(raw.get("domain", "")).lower(), str(raw.get("name", "")))
+            if key[1]:
+                merged[key] = raw
+    return list(merged.values())
 
 
 def build_export_payload(
@@ -63,9 +176,8 @@ def build_export_payload(
 
     if http_cookies is not None:
         cookies = cookies_for_referer(http_cookies, referer)
-        if cookies:
-            included.append("cookies")
-            payload["cookies"] = cookies
+        included.append("cookies")
+        payload["cookies"] = cookies
 
     storage_block: dict[str, Any] = {}
     if local_storage:

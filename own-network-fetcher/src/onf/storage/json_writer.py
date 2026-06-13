@@ -69,16 +69,7 @@ class SessionWriter:
         self.site_dir(domain)
 
         http_payload = build_http_cookie_payload(referer, http_cookies)
-        if http_payload.get("cookies"):
-            written.append(self.write_site_json(domain, "cookies.http.json", http_payload))
-        else:
-            written.append(
-                self.write_site_json(
-                    domain,
-                    "cookies.http.json",
-                    {"referer": referer, "includedFormats": ["cookies"], "cookies": []},
-                )
-            )
+        written.append(self.write_site_json(domain, "cookies.http.json", http_payload))
 
         if local_storage:
             written.append(

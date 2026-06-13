@@ -17,6 +17,7 @@ from onf.capture.cookies import (
 )
 from onf.capture.storage_collector import StorageCollector
 from onf.config import RunConfig
+from onf.export.cookie_bundle import events_to_cdp_cookies, merge_cdp_cookies
 from onf.logging_utils import log_info, log_save, log_skip
 from onf.models.session import CookieEvent, FullNetworkRecord, NetworkEvent, SessionModel
 from onf.storage.json_writer import SessionWriter
@@ -62,6 +63,7 @@ class CDPCapture:
         self._dedupe_keys: set[str] = set()
         self._stop = False
         self._last_flush = time.time()
+        self._last_export_sync = 0.0
 
     def _send(
         self,
@@ -112,6 +114,8 @@ class CDPCapture:
         if is_new:
             folder = self.writer.site_dir(domain)
             log_info(f"Site folder ready: {folder}")
+            if self.config.cookie_export:
+                self._sync_site_cookie_files(log_writes=False)
 
     def _should_save_network_for_domain(self, domain: str) -> bool:
         if not self.primary_sites:
@@ -131,6 +135,11 @@ class CDPCapture:
         self.session.cookie_events.append(event)
         self.session.summary.cookie_events_saved += 1
         self.writer.append_cookie_event(event)
+        if self.config.cookie_export and event.domain in self.primary_sites:
+            now = time.time()
+            if now - self._last_export_sync >= 1.0:
+                self._sync_site_cookie_files(log_writes=False)
+                self._last_export_sync = now
         names = ", ".join(str(item.get("name", "")) for item in event.cookies[:6])
         extra = f" +{len(event.cookies) - 6} more" if len(event.cookies) > 6 else ""
         log_save(
@@ -456,25 +465,50 @@ class CDPCapture:
 
         return referers
 
-    def _export_cookie_bundles(self, ws: Any) -> None:
-        collector = StorageCollector(ws, self._send)
-        all_cookies = collector.get_cookies()
-        self.session.cookie_jar_snapshot = all_cookies
-        referers = self._collect_export_referers()
+    def _http_cookies_for_site(self, *, referer: str, site_domain: str, jar: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        event_cookies = events_to_cdp_cookies(
+            self.session.cookie_events,
+            referer=referer,
+            site_domain=site_domain,
+        )
+        return merge_cdp_cookies(jar, event_cookies)
 
+    def _sync_site_cookie_files(
+        self,
+        ws: Any | None = None,
+        *,
+        collect_storage: bool = False,
+        log_writes: bool = False,
+    ) -> None:
+        referers = self._collect_export_referers()
         if not referers:
-            log_skip("No website tab detected — koi site folder nahi bana.")
-            log_skip("Chrome mein site kholo, thoda browse karo, phir Ctrl+C dabao.")
             return
+
+        jar = list(self.session.cookie_jar_snapshot)
+        collector: StorageCollector | None = None
+        if collect_storage and ws is not None:
+            collector = StorageCollector(ws, self._send, timeout_s=12.0)
+            try:
+                fresh = collector.get_cookies()
+                if fresh:
+                    jar = fresh
+                    self.session.cookie_jar_snapshot = fresh
+            except Exception as exc:
+                log_skip(f"Cookie jar refresh skipped: {exc}")
 
         site_count = 0
         file_count = 0
         for domain, referer in referers.items():
+            http_cookies = self._http_cookies_for_site(
+                referer=referer,
+                site_domain=domain,
+                jar=jar,
+            )
             local_storage: dict[str, str] = {}
             session_storage: dict[str, str] = {}
             indexed_db: dict[str, Any] = {}
             sid = self.page_session_by_domain.get(domain)
-            if sid:
+            if collector and sid:
                 try:
                     local_storage, session_storage = collector.collect_dom_storage(sid)
                 except Exception as exc:
@@ -484,26 +518,43 @@ class CDPCapture:
                 except Exception as exc:
                     log_skip(f"IndexedDB skipped for {referer}: {exc}")
 
-            paths = self.writer.write_site_cookie_exports(
-                domain=domain,
-                referer=referer,
-                http_cookies=all_cookies,
-                local_storage=local_storage,
-                session_storage=session_storage,
-                indexed_db=indexed_db,
-            )
+            try:
+                paths = self.writer.write_site_cookie_exports(
+                    domain=domain,
+                    referer=referer,
+                    http_cookies=http_cookies,
+                    local_storage=local_storage,
+                    session_storage=session_storage,
+                    indexed_db=indexed_db,
+                )
+            except Exception as exc:
+                log_skip(f"Site export failed for {domain}: {exc}")
+                continue
+
             site_count += 1
             file_count += len(paths)
-            site_folder = self.writer.site_dir(domain)
-            log_info(f"Site export: {site_folder}")
-            for path in paths:
-                log_info(f"  saved {path.name}")
+            if log_writes:
+                site_folder = self.writer.site_dir(domain)
+                log_info(f"Site export: {site_folder}")
+                for path in paths:
+                    log_info(f"  saved {path.name}")
 
-        log_info(f"Cookie export complete: {site_count} site folder(s), {file_count} file(s)")
+        if log_writes:
+            log_info(f"Cookie export complete: {site_count} site folder(s), {file_count} file(s)")
+
+    def _export_cookie_bundles(self, ws: Any) -> None:
+        try:
+            self._sync_site_cookie_files(ws, collect_storage=True, log_writes=True)
+        except Exception as exc:
+            log_skip(f"Final cookie export failed: {exc}")
+            self._sync_site_cookie_files(log_writes=True)
 
     def _maybe_flush(self) -> None:
         now = time.time()
         if now - self._last_flush >= self.config.flush_interval_s:
+            if self.config.cookie_export and now - self._last_export_sync >= self.config.flush_interval_s:
+                self._sync_site_cookie_files(log_writes=False)
+                self._last_export_sync = now
             self.writer.write_session(self.session)
             self._last_flush = now
 
@@ -579,6 +630,7 @@ class CDPCapture:
         )
         self.writer.write_session(self.session)
         log_info("Capturing — browse in Chrome. Press Ctrl+C to stop.")
+        log_info("Cookie files har site folder mein live update hongi (Ctrl+C par final storage snapshot).")
 
         try:
             while not self._stop:
