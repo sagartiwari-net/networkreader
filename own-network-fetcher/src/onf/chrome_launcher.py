@@ -168,15 +168,23 @@ def ensure_chrome_debug(
 ) -> None:
     """Wait for debug port; optionally restart Chrome with the chosen real profile."""
     if is_debug_port_ready(chrome):
+        log_info(
+            "Chrome debug port 9222 pehle se ready hai — "
+            f"existing session continue ho raha hai ({chrome.profile_directory})."
+        )
         return
 
     if is_chrome_running():
         log_info(
-            "Chrome khula hai lekin debug port 9222 par nahi hai.\n"
-            "Real profile ke saath restart hoga — extensions/login same profile se aayenge."
+            f'Profile "{profile_display_name(chrome.profile_directory)}" '
+            f"({chrome.profile_directory}) debug mode mein start hoga."
         )
+        log_info("Pehle saara Chrome band hoga, phir wahi profile dubara khulega.")
     else:
-        log_info("Port 9222 par Chrome debug abhi nahi chal raha.")
+        log_info(
+            f'Profile "{profile_display_name(chrome.profile_directory)}" '
+            f"({chrome.profile_directory}) ke saath Chrome start ho raha hai."
+        )
 
     deadline = time.time() + initial_wait_s
     while time.time() < deadline:
@@ -232,16 +240,6 @@ def ensure_chrome_debug(
     )
 
 
-def format_profile_menu() -> str:
-    profiles = list_installed_profiles()
-    if not profiles:
-        return "Default"
-    lines = ["Installed Chrome profiles:"]
-    for index, item in enumerate(profiles, start=1):
-        lines.append(f'  {index} = {item["name"]}  ({item["directory"]})')
-    return "\n".join(lines)
-
-
 def profile_directory_from_menu_choice(choice: str) -> str:
     profiles = list_installed_profiles()
     if not profiles:
@@ -255,5 +253,38 @@ def profile_directory_from_menu_choice(choice: str) -> str:
         idx = int(text) - 1
         if 0 <= idx < len(profiles):
             return profiles[idx]["directory"]
+        raise RuntimeError(f"Galat number. List mein se 1 se {len(profiles)} enter karo.")
 
-    return resolve_profile_directory(text)
+    lowered = text.lower()
+    for item in profiles:
+        if item["directory"].lower() == lowered or item["name"].lower() == lowered:
+            return item["directory"]
+
+    partial = [
+        item
+        for item in profiles
+        if lowered in item["name"].lower() or lowered in item["directory"].lower()
+    ]
+    if len(partial) == 1:
+        return partial[0]["directory"]
+
+    options = ", ".join(str(index) for index in range(1, len(profiles) + 1))
+    raise RuntimeError(f'"{text}" match nahi hua. Sirf number enter karo: {options}')
+
+
+def profile_display_name(profile_directory: str) -> str:
+    for item in list_installed_profiles():
+        if item["directory"] == profile_directory:
+            return item["name"]
+    return profile_directory
+
+
+def format_profile_menu() -> str:
+    profiles = list_installed_profiles()
+    if not profiles:
+        return "Koi installed Chrome profile nahi mila — Default use hoga."
+    lines = ["Chrome profile select karo (sirf number enter karo):"]
+    for index, item in enumerate(profiles, start=1):
+        lines.append(f'  {index} = {item["name"]}')
+    lines.append(f"  (internal folder: {profiles[0]['directory']}, Profile 1, ...) — path yaad rakhne ki zaroorat nahi")
+    return "\n".join(lines)

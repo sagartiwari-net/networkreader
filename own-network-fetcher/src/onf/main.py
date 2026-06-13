@@ -8,7 +8,12 @@ from datetime import datetime
 from pathlib import Path
 
 from onf import __version__
-from onf.chrome_launcher import format_profile_menu, profile_directory_from_menu_choice
+from onf.chrome_launcher import (
+    format_profile_menu,
+    profile_directory_from_menu_choice,
+    profile_display_name,
+)
+from onf.chrome_profiles import list_installed_profiles
 from onf.config import CaptureMode, ChromeConfig, RunConfig
 from onf.logging_utils import log_info
 from onf.paths import configure_frozen_runtime, default_output_dir, is_frozen
@@ -119,7 +124,7 @@ def print_startup_banner(config: RunConfig) -> None:
     log_info(f"Own Network Fetcher v{__version__}")
     log_info(f"Capture mode : {mode}")
     log_info(f"Chrome CDP   : {config.chrome.cdp_url}")
-    log_info(f"Chrome profile: {config.chrome.profile_directory}")
+    log_info(f"Chrome profile: {profile_display_name(config.chrome.profile_directory)} ({config.chrome.profile_directory})")
     if config.chrome.use_installed_profile and config.chrome.user_data_dir is None:
         log_info(f"User data dir : {config.chrome.resolved_user_data_dir()}")
     log_info(f"Task ID      : {config.task_id}")
@@ -171,18 +176,29 @@ def build_config(args: argparse.Namespace) -> RunConfig:
 
 
 def prompt_chrome_profile() -> str:
-    log_info("")
-    log_info(format_profile_menu())
-    log_info('Enter number or profile folder name (Enter = first profile):')
-    try:
-        choice = input("Chrome profile: ").strip()
-    except EOFError:
+    profiles = list_installed_profiles()
+    if not profiles:
+        log_info("Koi Chrome profile nahi mila — Default use hoga.")
         return "Default"
-    try:
-        return profile_directory_from_menu_choice(choice)
-    except RuntimeError as exc:
-        log_info(str(exc))
-        return "Default"
+
+    while True:
+        log_info("")
+        log_info(format_profile_menu())
+        try:
+            choice = input(f"Enter 1-{len(profiles)}: ").strip()
+        except EOFError:
+            selected = profiles[0]["directory"]
+            log_info(f'Selected: {profiles[0]["name"]} ({selected})')
+            return selected
+
+        try:
+            directory = profile_directory_from_menu_choice(choice)
+        except RuntimeError as exc:
+            log_info(str(exc))
+            continue
+
+        log_info(f'Selected: {profile_display_name(directory)} ({directory})')
+        return directory
 
 
 def prompt_capture_mode() -> CaptureMode:
