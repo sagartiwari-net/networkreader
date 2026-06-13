@@ -15,8 +15,10 @@ from onf.chrome_profiles import (
     clone_profile_for_debug,
     installed_user_data_dir,
     list_installed_profiles,
+    onf_debug_user_data_dir,
     profile_display_name,
     resolve_profile_directory,
+    sync_profile_for_debug,
 )
 from onf.config import ChromeConfig
 from onf.logging_utils import log_info
@@ -65,7 +67,7 @@ def profile_root_for_launch(chrome: ChromeConfig) -> tuple[Path, str, str]:
         clone_root = (
             chrome.clone_profile_dir
             if chrome.clone_profile_dir
-            else Path(os.environ.get("TEMP", "")) / "onf-profile-clone"
+            else onf_debug_user_data_dir()
         )
         cloned = clone_profile_for_debug(
             source_user_data_dir=installed_root,
@@ -75,9 +77,21 @@ def profile_root_for_launch(chrome: ChromeConfig) -> tuple[Path, str, str]:
         return cloned, profile_directory, "cloned-installed-profile"
 
     if chrome.use_installed_profile:
-        return installed_user_data_dir(), profile_directory, "installed-profile"
+        installed_root = installed_user_data_dir()
+        debug_root = onf_debug_user_data_dir()
+        log_info(
+            "Profile sync ho raha hai ONF debug folder mein "
+            f"({profile_display_name(profile_directory)} — Chrome 136+ ke liye zaroori)..."
+        )
+        sync_profile_for_debug(
+            source_user_data_dir=installed_root,
+            profile_directory=profile_directory,
+            debug_user_data_dir=debug_root,
+        )
+        log_info(f"Profile sync complete: {debug_root}")
+        return debug_root, profile_directory, "onf-debug-profile"
 
-    legacy = Path(os.environ.get("LOCALAPPDATA", "")) / "onf-chrome-debug"
+    legacy = onf_debug_user_data_dir()
     return legacy, "Default", "legacy-temp-profile"
 
 
@@ -101,6 +115,16 @@ def is_chrome_running() -> bool:
         check=False,
     )
     return "chrome.exe" in result.stdout.lower()
+
+
+def clear_chrome_singleton_artifacts(user_data_dir: Path) -> None:
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        path = user_data_dir / name
+        try:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+        except OSError:
+            pass
 
 
 def kill_chrome_processes() -> None:
@@ -137,10 +161,12 @@ def launch_chrome_debug(chrome: ChromeConfig) -> subprocess.Popen | None:
 
     profile_root, profile_directory, launch_mode = profile_root_for_launch(chrome)
     profile_root.mkdir(parents=True, exist_ok=True)
+    clear_chrome_singleton_artifacts(profile_root)
 
     args = [
         str(chrome_exe),
         f"--remote-debugging-port={chrome.port}",
+        "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*",
         f"--user-data-dir={profile_root}",
         f"--profile-directory={profile_directory}",
@@ -150,20 +176,14 @@ def launch_chrome_debug(chrome: ChromeConfig) -> subprocess.Popen | None:
         "about:blank",
     ]
     log_info(f"Chrome start ({launch_mode}): {profile_display_name(profile_directory)}")
+    log_info(f"User data dir: {profile_root}")
     log_info(f"Profile folder: {profile_directory}")
-
-    if sys.platform == "win32":
-        subprocess.Popen(
-            ["cmd", "/c", "start", ""] + args,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return None
 
     return subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        close_fds=False,
     )
 
 
@@ -172,7 +192,7 @@ def wait_for_debug_port(chrome: ChromeConfig, *, timeout_s: float) -> bool:
     while time.time() < deadline:
         if is_debug_port_ready(chrome, timeout_s=1.0):
             return True
-        time.sleep(0.4)
+        time.sleep(0.5)
     return False
 
 
@@ -181,7 +201,7 @@ def ensure_chrome_debug(
     *,
     auto_launch: bool = True,
     force_restart: bool = False,
-    launch_wait_s: float = 45.0,
+    launch_wait_s: float = 60.0,
 ) -> None:
     """Connect to debug port; launch only when Chrome is not already debug-ready."""
     if is_debug_port_ready(chrome):
@@ -202,11 +222,9 @@ def ensure_chrome_debug(
                 "Mode 1 (full network) aur Mode 2 (cookies) DONO ke liye debug port zaroori hai.\n"
                 "ONF aapka Chrome automatically band NAHI karega.\n\n"
                 "Option A (recommended, fast):\n"
-                "  1) Saara Chrome band karo (Task Manager)\n"
-                "  2) scripts\\launch_chrome_profile.bat chalao (apna profile select karo)\n"
-                "  3) Phir Start ONF.bat — turant connect hoga\n\n"
+                "  ONF dubara chalao aur Y dabao — profile sync + debug Chrome khulega\n\n"
                 "Option B:\n"
-                "  Start ONF.bat mein --force-restart-chrome use karo (Chrome band hoga)"
+                "  scripts\\launch_chrome_profile.bat chalao, phir Start ONF.bat"
             )
         else:
             raise RuntimeError(
@@ -215,16 +233,28 @@ def ensure_chrome_debug(
     elif not auto_launch:
         raise RuntimeError("Debug port ready nahi. scripts\\launch_chrome_profile.bat chalao.")
 
-    if not is_debug_port_ready(chrome):
-        launch_chrome_debug(chrome)
+    clear_chrome_singleton_artifacts(onf_debug_user_data_dir())
 
-    if wait_for_debug_port(chrome, timeout_s=launch_wait_s):
-        log_info("Chrome debug port ready.")
-        return
+    attempts = 2
+    per_attempt_wait = max(launch_wait_s / attempts, 20.0)
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            log_info(f"Debug port retry {attempt}/{attempts}...")
+            kill_chrome_processes()
+            wait_until_chrome_stopped()
+            clear_chrome_singleton_artifacts(onf_debug_user_data_dir())
+
+        if not is_debug_port_ready(chrome):
+            launch_chrome_debug(chrome)
+
+        if wait_for_debug_port(chrome, timeout_s=per_attempt_wait):
+            log_info("Chrome debug port ready.")
+            return
 
     if is_chrome_running() and not is_debug_port_ready(chrome):
         raise RuntimeError(
             "Chrome khula hai lekin debug port 9222 par nahi.\n"
+            "Chrome 136+ real profile folder par debug allow nahi karta — ONF ab onf-chrome-debug folder use karta hai.\n"
             "Task Manager se saara Chrome band karo, phir ONF dubara chalao aur Y dabao.\n"
             f"Test URL: {chrome.cdp_url}/json/version"
         )

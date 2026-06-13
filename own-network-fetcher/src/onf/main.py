@@ -14,7 +14,7 @@ from onf.chrome_launcher import (
     is_debug_port_ready,
     profile_directory_from_menu_choice,
 )
-from onf.chrome_profiles import list_installed_profiles, profile_display_name
+from onf.chrome_profiles import list_installed_profiles, onf_debug_user_data_dir, profile_display_name
 from onf.config import CaptureMode, ChromeConfig, RunConfig
 from onf.logging_utils import log_info
 from onf.paths import configure_frozen_runtime, default_output_dir, is_frozen
@@ -132,7 +132,8 @@ def print_startup_banner(config: RunConfig) -> None:
     log_info(f"Chrome CDP   : {config.chrome.cdp_url}")
     log_info(f"Chrome profile: {profile_display_name(config.chrome.profile_directory)} ({config.chrome.profile_directory})")
     if config.chrome.use_installed_profile and config.chrome.user_data_dir is None:
-        log_info(f"User data dir : {config.chrome.resolved_user_data_dir()}")
+        log_info(f"Installed Chrome: {config.chrome.resolved_user_data_dir()}")
+        log_info(f"ONF debug dir  : {onf_debug_user_data_dir()} (Chrome 136+ remote debug)")
     log_info(f"Task ID      : {config.task_id}")
     log_info(f"Output folder: {config.session_dir}")
     log_info("-" * 56)

@@ -12,6 +12,11 @@ def installed_user_data_dir() -> Path:
     return Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data"
 
 
+def onf_debug_user_data_dir() -> Path:
+    """Non-default Chrome user-data-dir required for remote debugging (Chrome 136+)."""
+    return Path(os.environ.get("LOCALAPPDATA", "")) / "onf-chrome-debug"
+
+
 def list_installed_profiles(user_data_dir: Path | None = None) -> list[dict[str, str]]:
     root = user_data_dir or installed_user_data_dir()
     if not root.exists():
@@ -111,3 +116,17 @@ def clone_profile_for_debug(
         shutil.copy2(local_state_src, local_state_dst)
 
     return clone_user_data_dir
+
+
+def sync_profile_for_debug(
+    *,
+    source_user_data_dir: Path,
+    profile_directory: str,
+    debug_user_data_dir: Path,
+) -> Path:
+    """Copy the selected installed profile into ONF's debug user-data-dir."""
+    return clone_profile_for_debug(
+        source_user_data_dir=source_user_data_dir,
+        profile_directory=profile_directory,
+        clone_user_data_dir=debug_user_data_dir,
+    )
