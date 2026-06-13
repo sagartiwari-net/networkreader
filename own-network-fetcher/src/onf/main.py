@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -85,8 +84,9 @@ def print_startup_banner(config: RunConfig) -> None:
     log_info("-" * 56)
     log_info("Pehle Chrome debug mode mein kholo (ya already open rakho):")
     log_info(
-        f'  chrome.exe --remote-debugging-port={config.chrome.port} '
-        "--remote-allow-origins=*"
+        f'  scripts\\start_chrome_debug.bat   (recommended)\n'
+        f'  OR chrome.exe --remote-debugging-port={config.chrome.port} '
+        "--remote-allow-origins=* --user-data-dir=%LOCALAPPDATA%\\onf-chrome-debug"
     )
     log_info("Phir Chrome mein site browse karo. Band karne ke liye: Ctrl+C")
     log_info("=" * 56)
@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
 
     exit_code = 0
     try:
-        exit_code = asyncio.run(run_capture(config))
+        exit_code = run_capture(config)
     except Exception as exc:
         log_info(f"Error: {exc}")
         exit_code = 1

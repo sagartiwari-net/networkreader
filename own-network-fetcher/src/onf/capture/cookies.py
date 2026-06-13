@@ -23,6 +23,10 @@ def header_lookup(headers: dict[str, Any], name: str) -> str | None:
     return None
 
 
+def extract_cookie_header(headers: dict[str, Any]) -> str | None:
+    return header_lookup(headers, "cookie")
+
+
 def parse_cookie_header(cookie_header: str) -> tuple[list[dict[str, str]], list[str]]:
     """Parse a Cookie request header into structured entries."""
     cookies: list[dict[str, str]] = []

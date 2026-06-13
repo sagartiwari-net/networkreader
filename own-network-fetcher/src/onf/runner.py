@@ -1,46 +1,30 @@
-"""Async entrypoint for a capture run."""
+"""Sync CDP capture entrypoint."""
 
 from __future__ import annotations
 
-from playwright.async_api import async_playwright
-
-from onf.browser_pool import connect_browser
-from onf.capture.session_capture import SessionCapture
+from onf.browser_pool import get_browser_ws_url
+from onf.capture.cdp_capture import CDPCapture
 from onf.config import RunConfig
 from onf.logging_utils import log_info
 
 
-async def run_capture(config: RunConfig) -> int:
+def run_capture(config: RunConfig) -> int:
     try:
-        playwright_ctx = async_playwright()
+        ws_url = get_browser_ws_url(config.chrome)
     except Exception as exc:
-        log_info(f"Playwright load failed: {exc}")
         log_info(
-            "Install Microsoft Visual C++ Redistributable x64, then rebuild:\n"
-            "  https://aka.ms/vs/17/release/vc_redist.x64.exe"
+            "Could not connect to Chrome debug port.\n"
+            "1) Close ALL Chrome windows (Task Manager check karo)\n"
+            "2) Run: ..\\scripts\\start_chrome_debug.bat\n"
+            "3) Profile select karo, phir onf.exe dubara chalao\n"
+            f"Details: {exc}"
         )
         return 1
 
-    async with playwright_ctx as playwright:
-        try:
-            browser = await connect_browser(playwright, config.chrome)
-        except Exception as exc:
-            log_info(
-                "Could not connect to Chrome. Start Chrome with remote debugging, e.g.\n"
-                f'  chrome.exe --remote-debugging-port={config.chrome.port} '
-                "--remote-allow-origins=*"
-            )
-            log_info(f"CDP connect failed: {exc}")
-            return 1
-
-        capture = SessionCapture(browser, config)
-        await capture.start()
-
-        try:
-            await capture.wait_for_stop()
-        except KeyboardInterrupt:
-            log_info("Interrupted — saving session...")
-        finally:
-            await capture.finalize()
-
+    log_info(f"Connected to Chrome CDP")
+    try:
+        CDPCapture(ws_url, config).run()
+    except Exception as exc:
+        log_info(f"Capture error: {exc}")
+        return 1
     return 0

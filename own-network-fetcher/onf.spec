@@ -9,7 +9,7 @@ datas = []
 binaries = []
 hiddenimports = collect_submodules("onf")
 
-for package in ("playwright", "pydantic", "pydantic_core", "httpx", "httpcore", "anyio"):
+for package in ("pydantic", "pydantic_core", "websocket"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
     datas += pkg_datas
     binaries += pkg_binaries
@@ -24,7 +24,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["playwright", "greenlet"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
