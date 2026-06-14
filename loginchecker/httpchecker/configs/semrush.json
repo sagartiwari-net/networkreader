@@ -25,6 +25,7 @@
     "subscription_page_url": "https://www.semrush.com/accounts/subscription-info/",
     "account_query_url": "https://www.semrush.com/accounts/subscription-info/api/v1/header/",
     "toolkits_summary_url": "https://www.semrush.com/accounts/subscription-info/api/v1/toolkits/summary/",
+    "user_info_url": "https://www.semrush.com/accounts/user-info",
     "sso_version": "4.4.1",
     "user_agent_hash": "8109d0ebea1d682bbe7bc3ab7242c807"
   },
@@ -83,6 +84,8 @@
         "body_contains": [
           "ERROR_INVALID_CREDENTIALS",
           "invalid email or password",
+          "Wrong login or password",
+          "wrong login or password",
           "ERROR_UAHASH_INVALID",
           "ERROR_RECAPTCHA",
           "too many attempts"
