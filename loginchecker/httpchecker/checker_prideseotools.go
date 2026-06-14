@@ -16,7 +16,8 @@ func (c *Checker) checkPrideSeoTools(email, password string, proxyURL *url.URL) 
 		result.Reason = err.Error()
 		return result
 	}
-	defer clearHTTPClientSession(client, c.cfg.BaseURL(), "https://prideseotools.com")
+	sessionOpen := false
+	defer deferAmemberSession(client, c, &sessionOpen, c.cfg.BaseURL(), "https://prideseotools.com")()
 
 	loginURL := c.cfg.LoginURL()
 	referer := c.cfg.Var("login_referer", c.cfg.BaseURL()+"/login")
@@ -87,6 +88,7 @@ func (c *Checker) checkPrideSeoTools(email, password string, proxyURL *url.URL) 
 		result.Reason = "login failed — still on sign-in page"
 		return result
 	}
+	sessionOpen = true
 
 	result.AccountEmail = email
 	planInfo := c.fetchAmemberShopPlanInfo(client, postBody)

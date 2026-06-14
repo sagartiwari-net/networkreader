@@ -17,7 +17,8 @@
     "member_url": "https://members.prideseotools.com/member",
     "home_url": "https://members.prideseotools.com/",
     "subscriptions_url": "https://members.prideseotools.com/member/subscriptions",
-    "payment_history_url": "https://members.prideseotools.com/member/payment-history"
+    "payment_history_url": "https://members.prideseotools.com/member/payment-history",
+    "logout_url": "https://members.prideseotools.com/logout"
   },
   "steps": [
     {
@@ -60,6 +61,7 @@
     "Failure: div.am-errors — 'The user name or password is incorrect'.",
     "FREE: #no_subscription or no resource-link widgets on /member.",
     "PAID: resource-link-file/link/folder/page widgets or subscription-item.",
-    "Browser may show Cloudflare Turnstile on some IPs — use residential proxy if blocked."
+    "Browser may show Cloudflare Turnstile on some IPs — use residential proxy if blocked.",
+    "After each successful login check, GET /logout is called to avoid concurrent session bans."
   ]
 }

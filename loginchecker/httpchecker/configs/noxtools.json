@@ -15,7 +15,8 @@
     "login_url": "https://noxtools.com/secure/login",
     "login_referer": "https://noxtools.com/",
     "member_url": "https://noxtools.com/secure/member",
-    "payment_history_url": "https://noxtools.com/secure/member/payment-history"
+    "payment_history_url": "https://noxtools.com/secure/member/payment-history",
+    "logout_url": "https://noxtools.com/logout"
   },
   "steps": [
     {

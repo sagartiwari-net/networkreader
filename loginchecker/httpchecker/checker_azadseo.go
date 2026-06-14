@@ -31,7 +31,8 @@ func (c *Checker) checkAzadseo(email, password string, proxyURL *url.URL) CheckR
 		result.Reason = err.Error()
 		return result
 	}
-	defer clearHTTPClientSession(client, c.cfg.BaseURL(), "https://azadseo.com")
+	sessionOpen := false
+	defer deferAmemberSession(client, c, &sessionOpen, c.cfg.BaseURL(), "https://azadseo.com")()
 
 	loginURL := c.cfg.LoginURL()
 	referer := c.cfg.Var("login_referer", c.cfg.BaseURL()+"/login")
@@ -95,6 +96,7 @@ func (c *Checker) checkAzadseo(email, password string, proxyURL *url.URL) CheckR
 		result.Reason = "login failed — still on sign-in page"
 		return result
 	}
+	sessionOpen = true
 
 	result.AccountEmail = email
 	planInfo := c.fetchAmemberShopPlanInfo(client, postBody)
@@ -486,6 +488,25 @@ func (c *Checker) amemberShopPageHeaders(referer string) map[string]string {
 		"Pragma":          "no-cache",
 		"User-Agent":      c.cfg.UserAgent,
 		"Referer":         referer,
+	}
+}
+
+func (c *Checker) amemberLogout(client *http.Client) {
+	if client == nil {
+		return
+	}
+	referer := c.cfg.Var("member_url", c.cfg.BaseURL()+"/member")
+	headers := c.amemberShopPageHeaders(referer)
+	logoutURL := c.cfg.Var("logout_url", c.cfg.BaseURL()+"/logout")
+	c.doRequest(client, "GET", logoutURL, headers, "")
+}
+
+func deferAmemberSession(client *http.Client, c *Checker, sessionOpen *bool, bases ...string) func() {
+	return func() {
+		if sessionOpen != nil && *sessionOpen {
+			c.amemberLogout(client)
+		}
+		clearHTTPClientSession(client, bases...)
 	}
 }
 

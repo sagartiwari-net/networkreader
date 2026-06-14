@@ -16,7 +16,8 @@
     "login_referer": "https://access.hindseo.com/login",
     "member_url": "https://access.hindseo.com/member",
     "subscriptions_url": "https://access.hindseo.com/member/subscriptions",
-    "payment_history_url": "https://access.hindseo.com/member/payment-history"
+    "payment_history_url": "https://access.hindseo.com/member/payment-history",
+    "logout_url": "https://access.hindseo.com/logout"
   },
   "steps": [
     {
