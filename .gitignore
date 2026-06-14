@@ -32,5 +32,6 @@ own-network-fetcher/dist/
 own-network-fetcher/build/
 own-network-fetcher/.venv/
 
-# HTTP checker results (may contain credentials)
+# HTTP checker results + Mac build artifact (Windows uses buzzsumo-checker.exe)
+loginchecker/httpchecker/buzzsumo-checker
 loginchecker/httpchecker/results/
