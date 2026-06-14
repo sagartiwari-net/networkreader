@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -101,11 +102,7 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 				if proxySem != nil {
 					proxySem <- struct{}{}
 				}
-				var proxy *url.URL
-				if proxyPool != nil {
-					proxy = proxyPool.Next()
-				}
-				res := checker.Check(acc.Email, acc.Password, proxy)
+				res := checkAccountWithRetry(checker, acc, proxyPool, cfg)
 				if proxySem != nil {
 					<-proxySem
 				}
@@ -200,4 +197,35 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 	fmt.Println("  errors.txt         — other errors")
 
 	return stats, elapsed, nil
+}
+
+func checkAccountWithRetry(checker *Checker, acc Account, proxyPool *ProxyPool, cfg *Config) CheckResult {
+	maxAttempts := 1
+	if proxyPool != nil && cfg.Settings.RetryOnError > 0 {
+		maxAttempts = cfg.Settings.RetryOnError + 1
+	}
+	var res CheckResult
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var proxy *url.URL
+		if proxyPool != nil {
+			proxy = proxyPool.Next()
+		}
+		res = checker.Check(acc.Email, acc.Password, proxy)
+		if !isRetryableCheckResult(res) || attempt+1 >= maxAttempts {
+			break
+		}
+		time.Sleep(time.Duration(400*(attempt+1)) * time.Millisecond)
+	}
+	return res
+}
+
+func isRetryableCheckResult(res CheckResult) bool {
+	if res.Status == StatusRateLimited {
+		return true
+	}
+	if res.Status == StatusError {
+		lower := strings.ToLower(res.Reason)
+		return strings.Contains(lower, "timeout") || strings.Contains(lower, "gateway timeout")
+	}
+	return false
 }
