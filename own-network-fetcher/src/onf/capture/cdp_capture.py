@@ -276,6 +276,65 @@ class CDPCapture:
         )
         self._save_cookie_event(event)
 
+    @staticmethod
+    def _request_method(state: dict[str, Any]) -> str:
+        method = state.get("method")
+        if method:
+            return str(method).upper()
+        headers = state.get("extra_headers") or state.get("headers") or {}
+        pseudo = headers.get(":method") or headers.get(":Method")
+        if pseudo:
+            return str(pseudo).upper()
+        return "GET"
+
+    @staticmethod
+    def _method_may_have_body(method: str) -> bool:
+        return method in {"POST", "PUT", "PATCH", "DELETE"}
+
+    def _ensure_request_state(self, key: tuple[str, str]) -> dict[str, Any]:
+        return self.pending_by_key.setdefault(key, {})
+
+    def _needs_post_data_fetch(self, state: dict[str, Any]) -> bool:
+        if state.get("post_data") or state.get("post_data_requested"):
+            return False
+        return self._method_may_have_body(self._request_method(state))
+
+    def _try_complete_non_get_record(
+        self,
+        ws: Any,
+        key: tuple[str, str],
+        session_id: str,
+        request_id: str,
+    ) -> None:
+        state = self.pending_by_key.get(key, {})
+        if state.get("full_record_saved"):
+            return
+        method = self._request_method(state)
+        if method == "GET":
+            return
+        if state.get("waiting_post_data"):
+            return
+        if self._needs_post_data_fetch(state):
+            self._fetch_request_post_data(
+                ws,
+                key,
+                session_id=session_id,
+                request_id=request_id,
+            )
+            return
+
+        headers = state.get("extra_headers") or state.get("headers") or {}
+        if not headers:
+            return
+        url = state.get("url") or self.response_meta.get(key, {}).get("url") or ""
+        if not url.startswith(("http://", "https://")):
+            return
+
+        if key in self.response_meta:
+            self._finalize_full_network_record(key, None)
+        elif state.get("extra_headers"):
+            self._write_full_network_record(key, None)
+
     def _write_full_network_record(self, key: tuple[str, str], body: str | None) -> None:
         state = self.pending_by_key.get(key, {})
         meta = self.response_meta.get(key, {})
@@ -289,11 +348,12 @@ class CDPCapture:
             state["full_record_saved"] = True
             return
 
+        method = self._request_method(state)
         headers = state.get("extra_headers") or state.get("headers") or {}
         cookie_header = extract_cookie_header(headers)
         request_payload: dict[str, Any] = {
             "url": url,
-            "method": state.get("method") or "GET",
+            "method": method,
             "headers": self._clean_headers(headers),
         }
         if state.get("post_data"):
@@ -318,7 +378,7 @@ class CDPCapture:
         record = FullNetworkRecord(
             timestamp=state.get("created_at", datetime.now(timezone.utc).isoformat()),
             url=url,
-            method=state.get("method") or "GET",
+            method=method,
             domain=safe_domain(url),
             request=request_payload,
             response=response_payload,
@@ -363,22 +423,14 @@ class CDPCapture:
         self._write_full_network_record(key, body)
 
     def _on_full_network_response(self, ws: Any, key: tuple[str, str], session_id: str) -> None:
-        state = self.pending_by_key.get(key, {})
-        if not state or state.get("full_record_saved"):
+        state = self._ensure_request_state(key)
+        if state.get("full_record_saved"):
             return
+        meta = self.response_meta.get(key, {})
+        if meta.get("url") and not state.get("url"):
+            state["url"] = meta["url"]
         state["response_received"] = True
-        method = (state.get("method") or "GET").upper()
-        request_id = key[1]
-        if method != "GET":
-            if state.get("has_post_data") and not state.get("post_data"):
-                self._fetch_request_post_data(
-                    ws,
-                    key,
-                    session_id=session_id,
-                    request_id=request_id,
-                )
-            else:
-                self._finalize_full_network_record(key, None)
+        self._try_complete_non_get_record(ws, key, session_id, key[1])
 
     def _try_process_request(self, key: tuple[str, str]) -> None:
         state = self.pending_by_key.get(key)
@@ -429,7 +481,8 @@ class CDPCapture:
             if target_id:
                 self.attached_target_ids.add(target_id)
                 self.target_id_to_session[target_id] = sid
-            self._send(ws, "Network.enable", session_id=sid)
+            network_params = {"maxPostDataSize": 65536}
+            self._send(ws, "Network.enable", network_params, session_id=sid)
             if target_type == "page":
                 if self.config.cookie_export or self.config.full_network:
                     self._send(ws, "Page.enable", session_id=sid)
@@ -483,28 +536,34 @@ class CDPCapture:
             ):
                 self._register_primary_site(session_id, url)
             key = (session_id, request_id)
-            prev = self.pending_by_key.get(key, {})
+            state = self._ensure_request_state(key)
+            headers = request.get("headers", {}) or {}
             post_data = request.get("postData")
             has_post_data = bool(request.get("hasPostData"))
-            self.pending_by_key[key] = {
-                "method": request.get("method"),
-                "url": url,
-                "headers": request.get("headers", {}) or {},
-                "extra_headers": prev.get("extra_headers"),
-                "post_data": post_data,
-                "has_post_data": has_post_data,
-                "resource_type": params.get("type"),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "processed": False,
-            }
-            if self.config.full_network and has_post_data and not post_data:
-                self._fetch_request_post_data(
-                    ws,
-                    key,
-                    session_id=session_id,
-                    request_id=request_id,
-                )
-            if request.get("headers"):
+            req_method = (
+                request.get("method")
+                or headers.get(":method")
+                or state.get("method")
+                or "GET"
+            )
+            state.update(
+                {
+                    "method": req_method,
+                    "url": url or state.get("url") or "",
+                    "headers": headers or state.get("headers") or {},
+                    "post_data": post_data if post_data is not None else state.get("post_data"),
+                    "has_post_data": has_post_data or bool(state.get("has_post_data")),
+                    "resource_type": params.get("type") or state.get("resource_type"),
+                }
+            )
+            state.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+            state.setdefault("processed", False)
+            if self.config.full_network:
+                method_upper = self._request_method(state)
+                if method_upper != "GET":
+                    log_info(f"Request: {method_upper} {state.get('url', '')[:100]}")
+                self._try_complete_non_get_record(ws, key, session_id, request_id)
+            if request.get("headers") or state.get("extra_headers"):
                 self._try_process_request(key)
             return
 
@@ -517,6 +576,8 @@ class CDPCapture:
             state["extra_headers"] = params.get("headers", {}) or {}
             state.setdefault("created_at", datetime.now(timezone.utc).isoformat())
             state.setdefault("processed", False)
+            if self.config.full_network:
+                self._try_complete_non_get_record(ws, key, session_id, request_id)
             self._try_process_request(key)
             return
 
@@ -590,7 +651,7 @@ class CDPCapture:
             state = self.pending_by_key.get(key, {})
             if state.get("full_record_saved"):
                 return
-            if (state.get("method") or "GET").upper() != "GET":
+            if self._request_method(state) != "GET":
                 return
             msg_id = self._send(
                 ws,
@@ -639,15 +700,14 @@ class CDPCapture:
             if not key:
                 return
             state = self.pending_by_key.get(key, {})
+            session_id, request_id = key
             if message.get("error"):
                 state["waiting_post_data"] = False
-                if state.get("response_received"):
-                    self._finalize_full_network_record(key, state.pop("pending_body", None))
+                self._try_complete_non_get_record(ws, key, session_id, request_id)
                 return
             state["post_data"] = message.get("result", {}).get("postData", "")
             state["waiting_post_data"] = False
-            if state.get("response_received"):
-                self._finalize_full_network_record(key, state.pop("pending_body", None))
+            self._try_complete_non_get_record(ws, key, session_id, request_id)
         elif cmd == "Storage.getCookies":
             self.session.cookie_jar_snapshot = message.get("result", {}).get("cookies", [])
         elif cmd == "Target.getTargets":
@@ -891,6 +951,11 @@ class CDPCapture:
         for key, state in list(self.pending_by_key.items()):
             if state.get("full_record_saved"):
                 continue
+            method = self._request_method(state)
+            if method != "GET":
+                if state.get("extra_headers") or state.get("headers"):
+                    self._write_full_network_record(key, None)
+                continue
             if key not in self.response_meta:
                 continue
             self._write_full_network_record(key, None)
@@ -980,6 +1045,8 @@ class CDPCapture:
             "Target.setAutoAttach",
             {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
         )
+        if self.config.full_network:
+            self._send(ws, "Network.enable", {"maxPostDataSize": 65536})
         self._send(ws, "Target.getTargets")
         self.writer.write_session(self.session)
         log_info("Capturing — browse in Chrome. Press Ctrl+C to stop.")
@@ -992,7 +1059,10 @@ class CDPCapture:
             log_info(
                 "Har API request save: GET/POST/PUT + headers, postData, response status/body."
             )
-            log_info("POST/XHR turant responseReceived par save; GET body loadingFinished par.")
+            log_info(
+                "POST/PUT/PATCH: requestWillBeSentExtraInfo ya responseReceived par save; "
+                "GET body loadingFinished par."
+            )
             log_info("Output: per-site network.ndjson (Ctrl+C se band karo).")
 
         try:
