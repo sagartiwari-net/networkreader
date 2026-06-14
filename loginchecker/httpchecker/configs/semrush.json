@@ -101,9 +101,18 @@
         "User-Agent": "{{user_agent}}"
       },
       "extract": {
-        "plan_name": "subscription.title",
-        "is_free": "subscription.is_free",
-        "paid_till": "subscription.paid_till"
+        "plan_name": {
+          "source": "json_body",
+          "path": "subscription.title"
+        },
+        "is_free": {
+          "source": "json_body",
+          "path": "subscription.is_free"
+        },
+        "paid_till": {
+          "source": "json_body",
+          "path": "subscription.paid_till"
+        }
       }
     },
     {
