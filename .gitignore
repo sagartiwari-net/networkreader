@@ -31,3 +31,7 @@ releases/*.exe
 own-network-fetcher/dist/
 own-network-fetcher/build/
 own-network-fetcher/.venv/
+
+# HTTP checker local build + results (may contain credentials)
+loginchecker/httpchecker/buzzsumo-checker
+loginchecker/httpchecker/results/
