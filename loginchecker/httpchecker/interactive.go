@@ -59,14 +59,210 @@ func pauseBeforeExit() {
 
 func pickAccountsFileWindows(title string) (string, error) {
 	paths, err := pickWindowsTextFiles(title, false)
-	if err != nil {
-		return "", err
+	if err == nil {
+		return paths[0], nil
+	}
+	paths, menuErr := pickAccountsFromMenu(title, false, err)
+	if menuErr != nil {
+		return "", menuErr
+	}
+	if len(paths) == 0 {
+		return "", fmt.Errorf("no file selected")
 	}
 	return paths[0], nil
 }
 
 func pickAccountsFilesWindows(title string) ([]string, error) {
-	return pickWindowsTextFiles(title, true)
+	paths, err := pickWindowsTextFiles(title, true)
+	if err == nil {
+		return paths, nil
+	}
+	return pickAccountsFromMenu(title, true, err)
+}
+
+func pickWindowsTextFiles(title string, multiselect bool) ([]string, error) {
+	if runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("not windows")
+	}
+	resultFile, err := os.CreateTemp("", "httpchecker-pick-result-*.txt")
+	if err != nil {
+		return nil, err
+	}
+	resultPath := resultFile.Name()
+	resultFile.Close()
+	defer os.Remove(resultPath)
+
+	multiPS := "$false"
+	if multiselect {
+		multiPS = "$true"
+	}
+	script := fmt.Sprintf(`
+$ResultFile = %q
+$Title = %q
+try {
+  Add-Type -AssemblyName System.Windows.Forms | Out-Null
+  [System.Windows.Forms.Application]::EnableVisualStyles()
+  $d = New-Object System.Windows.Forms.OpenFileDialog
+  $d.Title = $Title
+  $d.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*"
+  $d.Multiselect = %s
+  $desktop = [Environment]::GetFolderPath('Desktop')
+  if (Test-Path -LiteralPath $desktop) { $d.InitialDirectory = $desktop }
+  $logs = Join-Path $desktop 'logs'
+  if (Test-Path -LiteralPath $logs) { $d.InitialDirectory = $logs }
+  if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    $paths = @()
+    if ($null -ne $d.FileNames -and $d.FileNames.Length -gt 0) { $paths = @($d.FileNames) }
+    elseif ($d.FileName) { $paths = @($d.FileName) }
+    if ($paths.Count -gt 0) {
+      [System.IO.File]::WriteAllLines($ResultFile, $paths)
+    }
+  }
+} catch {
+  [System.IO.File]::WriteAllText($ResultFile, ('ERROR:' + $_.Exception.Message))
+}
+`, resultPath, title, multiPS)
+
+	runEmbeddedPowerShell(script)
+
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		return nil, fmt.Errorf("read picker result: %w", err)
+	}
+	text := strings.TrimSpace(string(data))
+	if strings.HasPrefix(text, "ERROR:") {
+		return nil, fmt.Errorf("%s", strings.TrimPrefix(text, "ERROR:"))
+	}
+	paths := splitPickerLines(text)
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no file selected")
+	}
+	return paths, nil
+}
+
+func splitPickerLines(text string) []string {
+	var paths []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.Trim(line, `"`)
+		line = strings.TrimSuffix(line, "\r")
+		if line != "" {
+			paths = append(paths, line)
+		}
+	}
+	return paths
+}
+
+func discoverAccountTxtFiles() []string {
+	home, _ := os.UserHomeDir()
+	roots := []string{
+		filepath.Join(home, "Desktop", "logs"),
+		filepath.Join(home, "Desktop", "logs", "filtered_results"),
+		filepath.Join(home, "Desktop"),
+		`C:\Users\Administrator\Desktop\logs`,
+		`C:\Users\Administrator\Desktop\logs\filtered_results`,
+		`C:\Users\Administrator\Desktop`,
+	}
+	seen := make(map[string]struct{})
+	var files []string
+	for _, root := range roots {
+		matches, _ := filepath.Glob(filepath.Join(root, "*.txt"))
+		for _, m := range matches {
+			if _, ok := seen[strings.ToLower(m)]; ok {
+				continue
+			}
+			seen[strings.ToLower(m)] = struct{}{}
+			files = append(files, m)
+		}
+	}
+	return files
+}
+
+func pickAccountsFromMenu(title string, multiselect bool, pickerErr error) ([]string, error) {
+	for {
+		if pickerErr != nil {
+			fmt.Printf("  File picker unavailable: %v\n", pickerErr)
+		}
+		files := discoverAccountTxtFiles()
+		if len(files) > 0 {
+			fmt.Println()
+			fmt.Println("  Found account files — enter number(s), comma-separated:")
+			for i, f := range files {
+				fmt.Printf("    %2d = %s\n", i+1, f)
+			}
+			fmt.Println("    B  = Open file browser again")
+			fmt.Println("    A  = Select ALL listed files")
+			fmt.Println("    M  = Type full path(s) manually")
+			choice := readLine("  Select: ")
+			switch strings.ToUpper(strings.TrimSpace(choice)) {
+			case "B":
+				paths, err := pickWindowsTextFiles(title, multiselect)
+				if err == nil {
+					return paths, nil
+				}
+				pickerErr = err
+				continue
+			case "A":
+				if multiselect {
+					return append([]string(nil), files...), nil
+				}
+				return []string{files[0]}, nil
+			case "M":
+				paths := readAccountsPathsManual()
+				if len(paths) > 0 {
+					return paths, nil
+				}
+				continue
+			}
+			if choice != "" {
+				var selected []string
+				for _, part := range strings.Split(choice, ",") {
+					part = strings.TrimSpace(part)
+					if part == "" {
+						continue
+					}
+					idx, err := strconv.Atoi(part)
+					if err != nil || idx < 1 || idx > len(files) {
+						fmt.Printf("  Invalid choice: %q\n", part)
+						selected = nil
+						break
+					}
+					selected = append(selected, files[idx-1])
+				}
+				if len(selected) > 0 {
+					if !multiselect {
+						return selected[:1], nil
+					}
+					return selected, nil
+				}
+			}
+		}
+
+		fmt.Println("  Opening file browser again...")
+		paths, err := pickWindowsTextFiles(title, multiselect)
+		if err == nil {
+			return paths, nil
+		}
+		pickerErr = err
+		fmt.Println("  Type full path(s), comma-separated:")
+		paths = readAccountsPathsManual()
+		if len(paths) > 0 {
+			return paths, nil
+		}
+		return nil, fmt.Errorf("no accounts file selected")
+	}
+}
+
+func readAccountsPathsManual() []string {
+	raw := readLine("  Accounts file(s): ")
+	var paths []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.Trim(strings.TrimSpace(part), `"`)
+		if part != "" {
+			paths = append(paths, part)
+		}
+	}
+	return paths
 }
 
 func pickConfigFileWindows(title, initialDir string) (string, error) {
@@ -91,91 +287,19 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 	return strings.TrimSpace(out), nil
 }
 
-func pickWindowsTextFiles(title string, multiselect bool) ([]string, error) {
-	if runtime.GOOS != "windows" {
-		return nil, fmt.Errorf("not windows")
-	}
-	resultFile, err := os.CreateTemp("", "httpchecker-pick-result-*.txt")
-	if err != nil {
-		return nil, err
-	}
-	resultPath := resultFile.Name()
-	resultFile.Close()
-	defer os.Remove(resultPath)
-
-	multiArg := "false"
-	if multiselect {
-		multiArg = "true"
-	}
-	script := fmt.Sprintf(`
-param(
-	[string]$ResultFile,
-	[string]$Title,
-	[bool]$Multi
-)
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.Application]::EnableVisualStyles()
-$d = New-Object System.Windows.Forms.OpenFileDialog
-$d.Title = $Title
-$d.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*"
-$d.Multiselect = $Multi
-$d.InitialDirectory = [Environment]::GetFolderPath('Desktop')
-if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-	$paths = @()
-	if ($null -ne $d.FileNames -and $d.FileNames.Length -gt 0) {
-		$paths = @($d.FileNames)
-	} elseif ($d.FileName) {
-		$paths = @($d.FileName)
-	}
-	if ($paths.Count -gt 0) {
-		Set-Content -LiteralPath $ResultFile -Value $paths -Encoding UTF8
-	}
-}
-exit 0
-`)
+func runEmbeddedPowerShell(script string) {
 	tmp, err := os.CreateTemp("", "httpchecker-picker-*.ps1")
 	if err != nil {
-		return nil, err
+		return
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 	if _, err := tmp.WriteString(script); err != nil {
 		tmp.Close()
-		return nil, err
+		return
 	}
 	tmp.Close()
-
-	_, err = osExec(
-		"powershell",
-		"-NoProfile",
-		"-ExecutionPolicy", "Bypass",
-		"-STA",
-		"-File", tmpPath,
-		"-ResultFile", resultPath,
-		"-Title", title,
-		"-Multi", multiArg,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("file picker failed: %w", err)
-	}
-
-	data, err := os.ReadFile(resultPath)
-	if err != nil {
-		return nil, fmt.Errorf("read picker result: %w", err)
-	}
-	var paths []string
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		line = strings.Trim(line, `"`)
-		line = strings.TrimSuffix(line, "\r")
-		if line != "" {
-			paths = append(paths, line)
-		}
-	}
-	if len(paths) == 0 {
-		return nil, fmt.Errorf("no file selected")
-	}
-	return paths, nil
+	_, _ = osExec("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", tmpPath)
 }
 
 func runPowerShellFilePicker(script string) (string, error) {
@@ -290,22 +414,7 @@ func runInteractive() (configPath string, accountsPaths []string, resultsDir str
 
 	accountsPaths, err = pickAccountsFilesWindows("Select accounts file(s)")
 	if err != nil {
-		if strings.Contains(err.Error(), "no file selected") {
-			fmt.Println("  File picker cancelled.")
-		} else {
-			fmt.Printf("  File picker error: %v\n", err)
-		}
-		fmt.Println("  Type full path(s), comma-separated:")
-		raw := readLine("  Accounts file(s): ")
-		for _, part := range strings.Split(raw, ",") {
-			part = strings.Trim(strings.TrimSpace(part), `"`)
-			if part != "" {
-				accountsPaths = append(accountsPaths, part)
-			}
-		}
-	}
-	if len(accountsPaths) == 0 {
-		return "", nil, "", 0, "", fmt.Errorf("no accounts file selected")
+		return "", nil, "", 0, "", err
 	}
 
 	for i, p := range accountsPaths {
