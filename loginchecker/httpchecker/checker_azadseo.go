@@ -10,8 +10,13 @@ import (
 )
 
 var (
-	azadGroupBuyAccessRE = regexp.MustCompile(`(?is)href=["'][^"']*/member/go/[^"']+["']`)
-	azadGroupBuyToolRE   = regexp.MustCompile(`(?is)class=["'][^"']*(?:tool-title|tool-name|gb-tool|product-title)[^"']*["'][^>]*>([^<]{2,80})<`)
+	azadMemberGoRE        = regexp.MustCompile(`(?is)href=["']([^"']*/member/go/\d+[^"']*)["']`)
+	azadProductTitleRE    = regexp.MustCompile(`(?is)class=["'][^"']*(?:product-title|am-product-title)[^"']*["'][^>]*>([^<]{2,80})<`)
+	azadProductNameRE     = regexp.MustCompile(`(?is)class=["'][^"']*product-name[^"']*["'][^>]*>([^<]{2,80})<`)
+	azadAccessButtonRE    = regexp.MustCompile(`(?is)(?:href=["'][^"']*/member/go/\d+[^"']*["'][^>]*>|class=["'][^"']*(?:btn-access|access-btn)[^"']*["'][^>]*>)[^<]{0,120}?(?:access|launch|open tool)`)
+	azadToolCardBlockRE   = regexp.MustCompile(`(?is)<div[^>]*class=["'][^"']*(?:product|tool|card|col)[^"']*["'][^>]*>.*?</div>\s*</div>`)
+	azadImgAltRE          = regexp.MustCompile(`(?is)alt=["']([^"']{2,60})["']`)
+	azadSignupPriceRE     = regexp.MustCompile(`(?is)\$\d|for \d+ days|am-product-terms`)
 )
 
 func (c *Checker) checkAzadseo(email, password string, proxyURL *url.URL) CheckResult {
@@ -89,7 +94,7 @@ func (c *Checker) checkAzadseo(email, password string, proxyURL *url.URL) CheckR
 	}
 
 	result.AccountEmail = email
-	planInfo := c.fetchAzadseoPlanInfo(client)
+	planInfo := c.fetchAzadseoPlanInfo(client, postBody)
 	result.PlanName, result.PlanLabel = formatAzadseoPlanResult(planInfo)
 	result.Status = StatusHit
 	return result
@@ -120,78 +125,209 @@ func (c *Checker) postAzadseoLogin(client *http.Client, loginURL, email, passwor
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return resp.Request.URL.String(), "", resp.StatusCode, err
 	}
 	return resp.Request.URL.String(), string(data), resp.StatusCode, nil
 }
 
+func isAzadseoLoginPage(body string) bool {
+	lower := strings.ToLower(body)
+	if strings.Contains(lower, `name="amember_login"`) {
+		return true
+	}
+	if strings.Contains(lower, "please login") {
+		return true
+	}
+	if strings.Contains(lower, "<title>member login") {
+		return true
+	}
+	return false
+}
+
 func azadseoLoginSucceeded(finalURL, body string) bool {
 	if parseNoxtoolsLoginError(body) != "" {
+		return false
+	}
+	if isAzadseoLoginPage(body) {
 		return false
 	}
 	u, err := url.Parse(finalURL)
 	if err == nil {
 		path := strings.ToLower(strings.TrimSuffix(u.Path, "/"))
-		if path == "/member" || strings.HasPrefix(path, "/member/") {
-			return true
-		}
 		if path == "/login" || strings.HasSuffix(path, "/login") {
 			return false
 		}
 	}
-	lower := strings.ToLower(body)
-	if strings.Contains(lower, `name="amember_login"`) && strings.Contains(lower, "sign in") {
-		return false
-	}
-	return !strings.Contains(lower, `name="amember_login"`)
+	return true
 }
 
-func (c *Checker) fetchAzadseoPlanInfo(client *http.Client) noxtoolsPlanInfo {
+func (c *Checker) fetchAzadseoPlanInfo(client *http.Client, loginResponseBody string) noxtoolsPlanInfo {
 	info := noxtoolsPlanInfo{}
-	memberURL := c.cfg.Var("member_url", c.cfg.BaseURL()+"/member")
-	memberBody, status, _, err := c.doRequest(client, "GET", memberURL, c.azadseoPageHeaders(c.cfg.BaseURL()+"/login"), "")
-	if err == nil && status == http.StatusOK && !strings.Contains(strings.ToLower(memberBody), `name="amember_login"`) {
-		visible := noxtoolsVisibleHTML(memberBody)
-		info = parseNoxtoolsMemberPlans(visible)
-		info = mergeAzadseoGroupBuyTools(info, visible)
+	if loginResponseBody != "" && !isAzadseoLoginPage(loginResponseBody) {
+		info = mergeAzadseoPlanInfo(info, parseAzadseoMemberPage(loginResponseBody))
 	}
-	if len(info.Active) == 0 {
-		payURL := c.cfg.Var("payment_history_url", c.cfg.BaseURL()+"/member/payment-history")
-		payBody, payStatus, _, payErr := c.doRequest(client, "GET", payURL, c.azadseoPageHeaders(memberURL), "")
-		if payErr == nil && payStatus == http.StatusOK {
-			payHTML := noxtoolsVisibleHTML(payBody)
-			payInfo := parseNoxtoolsMemberPlans(payHTML)
-			if len(payInfo.Active) > 0 {
-				info.Active = payInfo.Active
-				info.NoActive = false
-			}
-			if len(payInfo.Expired) > 0 && len(info.Expired) == 0 {
-				info.Expired = payInfo.Expired
-			}
-			if payInfo.LastPaid != "" && info.LastPaid == "" && info.NoActive {
-				info.LastPaid = payInfo.LastPaid
+
+	base := c.cfg.BaseURL()
+	memberURL := c.cfg.Var("member_url", base+"/member")
+	subURL := c.cfg.Var("subscriptions_url", base+"/member/subscriptions")
+	payURL := c.cfg.Var("payment_history_url", base+"/member/payment-history")
+
+	referer := base + "/login"
+	for _, pageURL := range []string{memberURL, subURL, payURL} {
+		if planInfoComplete(info) {
+			break
+		}
+		body, status, _, err := c.doRequest(client, "GET", pageURL, c.azadseoPageHeaders(referer), "")
+		if err != nil || status != http.StatusOK || isAzadseoLoginPage(body) {
+			continue
+		}
+		info = mergeAzadseoPlanInfo(info, parseAzadseoMemberPage(body))
+		referer = pageURL
+	}
+	return finalizeAzadseoPlanInfo(info)
+}
+
+func planInfoComplete(info noxtoolsPlanInfo) bool {
+	return len(info.Active) > 0 || info.NoActive
+}
+
+func mergeAzadseoPlanInfo(dst, src noxtoolsPlanInfo) noxtoolsPlanInfo {
+	if src.NoActive {
+		dst.NoActive = true
+	}
+	if len(src.Active) > 0 {
+		dst.NoActive = false
+		dst.Active = appendUniquePlans(dst.Active, src.Active...)
+	}
+	if len(src.Expired) > 0 {
+		dst.Expired = appendUniquePlans(dst.Expired, src.Expired...)
+	}
+	if src.LastPaid != "" && dst.LastPaid == "" {
+		dst.LastPaid = src.LastPaid
+	}
+	return dst
+}
+
+func appendUniquePlans(list []string, items ...string) []string {
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" || isNoxtoolsNoisePlan(item) {
+			continue
+		}
+		dup := false
+		for _, existing := range list {
+			if strings.EqualFold(existing, item) || strings.EqualFold(noxtoolsPlanBaseName(existing), noxtoolsPlanBaseName(item)) {
+				dup = true
+				break
 			}
 		}
+		if !dup {
+			list = append(list, item)
+		}
+	}
+	return list
+}
+
+func parseAzadseoMemberPage(body string) noxtoolsPlanInfo {
+	info := parseNoxtoolsMemberPlans(noxtoolsVisibleHTML(body))
+	if len(info.Active) > 0 || info.NoActive {
+		return info
+	}
+
+	visible := noxtoolsVisibleHTML(body)
+	if hasAzadseoFreeMarkers(visible) {
+		info.NoActive = true
+		return info
+	}
+	if tools := parseAzadseoAccessibleTools(visible); len(tools) > 0 {
+		info.Active = tools
+		info.NoActive = false
+		return info
+	}
+	if packages := parseAzadseoPackageTitles(visible); len(packages) > 0 {
+		info.Active = packages
+		info.NoActive = false
+		return info
 	}
 	return info
 }
 
-func mergeAzadseoGroupBuyTools(info noxtoolsPlanInfo, body string) noxtoolsPlanInfo {
-	if info.NoActive || len(info.Active) > 0 {
-		return info
-	}
-	if !azadGroupBuyAccessRE.MatchString(body) {
-		return info
-	}
+func parseAzadseoAccessibleTools(body string) []string {
+	var tools []string
 	seen := map[string]struct{}{}
-	for _, name := range info.Active {
-		seen[strings.ToLower(name)] = struct{}{}
+
+	add := func(name string) {
+		name = strings.TrimSpace(noxtoolsStripHTML(name))
+		if name == "" || isNoxtoolsNoisePlan(name) || isAzadseoSignupNoise(name) {
+			return
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		tools = append(tools, name)
 	}
-	for _, m := range azadGroupBuyToolRE.FindAllStringSubmatch(body, -1) {
-		name := strings.TrimSpace(noxtoolsStripHTML(m[1]))
-		if name == "" || isNoxtoolsNoisePlan(name) {
+
+	for _, block := range azadToolCardBlockRE.FindAllString(body, -1) {
+		blockLower := strings.ToLower(block)
+		if !strings.Contains(blockLower, "/member/go/") && !azadAccessButtonRE.MatchString(block) {
+			continue
+		}
+		if title := firstAzadseoMatch(azadProductTitleRE, block); title != "" {
+			add(title)
+			continue
+		}
+		if name := firstAzadseoMatch(azadProductNameRE, block); name != "" {
+			add(name)
+			continue
+		}
+		if alt := firstAzadseoMatch(azadImgAltRE, block); alt != "" {
+			add(alt)
+		}
+	}
+
+	if len(tools) == 0 && azadMemberGoRE.MatchString(body) {
+		for _, block := range azadToolCardBlockRE.FindAllString(body, -1) {
+			if !strings.Contains(strings.ToLower(block), "/member/go/") {
+				continue
+			}
+			if title := firstAzadseoMatch(azadProductTitleRE, block); title != "" {
+				add(title)
+			} else if name := firstAzadseoMatch(azadProductNameRE, block); name != "" {
+				add(name)
+			} else if alt := firstAzadseoMatch(azadImgAltRE, block); alt != "" {
+				add(alt)
+			}
+		}
+		for _, m := range azadProductTitleRE.FindAllStringSubmatch(body, -1) {
+			add(m[1])
+		}
+	}
+
+	return tools
+}
+
+func parseAzadseoPackageTitles(body string) []string {
+	if azadMemberGoRE.MatchString(body) || azadAccessButtonRE.MatchString(body) {
+		return nil
+	}
+	var packages []string
+	seen := map[string]struct{}{}
+	for _, loc := range azadProductTitleRE.FindAllStringSubmatchIndex(body, -1) {
+		if len(loc) < 4 {
+			continue
+		}
+		name := strings.TrimSpace(noxtoolsStripHTML(body[loc[2]:loc[3]]))
+		if name == "" || isNoxtoolsNoisePlan(name) || isAzadseoSignupNoise(name) {
+			continue
+		}
+		start := max(0, loc[0]-120)
+		end := min(len(body), loc[1]+120)
+		chunk := body[start:end]
+		if azadSignupPriceRE.MatchString(chunk) {
 			continue
 		}
 		key := strings.ToLower(name)
@@ -199,11 +335,71 @@ func mergeAzadseoGroupBuyTools(info noxtoolsPlanInfo, body string) noxtoolsPlanI
 			continue
 		}
 		seen[key] = struct{}{}
-		info.Active = append(info.Active, name)
+		packages = append(packages, name)
 	}
+	return packages
+}
+
+func hasAzadseoFreeMarkers(body string) bool {
+	lower := strings.ToLower(body)
+	markers := []string{
+		`id="no_subscription"`,
+		"you have no active subscription",
+		"you have no active subscriptions",
+		"no active subscription",
+		"add/renew subscription",
+		"purchase a subscription",
+		"please purchase",
+		"subscribe to access",
+		"buy a subscription",
+	}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	if strings.Contains(lower, "signup") && strings.Contains(lower, "choose a subscription") {
+		return true
+	}
+	return false
+}
+
+func isAzadseoSignupNoise(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch lower {
+	case "student package", "basic package", "standard package", "guru package",
+		"amazon tools", "1 day trial", "semrush", "choose membership", "sign up":
+		return false
+	}
+	if strings.Contains(lower, " for ") && strings.Contains(lower, "days") {
+		return true
+	}
+	if strings.HasPrefix(lower, "$") {
+		return true
+	}
+	return false
+}
+
+func firstAzadseoMatch(re *regexp.Regexp, body string) string {
+	m := re.FindStringSubmatch(body)
+	if len(m) > 1 {
+		return strings.TrimSpace(noxtoolsStripHTML(m[1]))
+	}
+	return ""
+}
+
+func finalizeAzadseoPlanInfo(info noxtoolsPlanInfo) noxtoolsPlanInfo {
 	if len(info.Active) > 0 {
 		info.NoActive = false
+		return info
 	}
+	if info.NoActive {
+		return info
+	}
+	if len(info.Expired) > 0 || info.LastPaid != "" {
+		return info
+	}
+	info.NoActive = true
 	return info
 }
 
@@ -219,5 +415,21 @@ func (c *Checker) azadseoPageHeaders(referer string) map[string]string {
 }
 
 func formatAzadseoPlanResult(info noxtoolsPlanInfo) (planName, planLabel string) {
-	return formatNoxtoolsPlanResult(info)
+	if len(info.Active) > 0 {
+		return strings.Join(info.Active, " | "), "PAID"
+	}
+	if info.NoActive {
+		return "No Active Subscription", "FREE"
+	}
+	if len(info.Expired) > 0 {
+		parts := make([]string, len(info.Expired))
+		for i, name := range info.Expired {
+			parts[i] = name + " (expired)"
+		}
+		return strings.Join(parts, " | "), "EXPIRED"
+	}
+	if info.LastPaid != "" {
+		return info.LastPaid + " (expired)", "EXPIRED"
+	}
+	return "No Active Subscription", "FREE"
 }

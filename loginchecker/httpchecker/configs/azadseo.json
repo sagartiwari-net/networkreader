@@ -15,6 +15,7 @@
     "login_url": "https://members.azadseo.com/login",
     "login_referer": "https://members.azadseo.com/login",
     "member_url": "https://members.azadseo.com/member",
+    "subscriptions_url": "https://members.azadseo.com/member/subscriptions",
     "payment_history_url": "https://members.azadseo.com/member/payment-history"
   },
   "steps": [
