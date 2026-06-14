@@ -68,7 +68,7 @@ func ParseProxyLine(line string) (*url.URL, error) {
 		return u, nil
 	}
 
-	parts := strings.Split(line, ":")
+	parts := strings.SplitN(line, ":", 4)
 	switch len(parts) {
 	case 2:
 		u, err := url.Parse(fmt.Sprintf("http://%s:%s", parts[0], parts[1]))
@@ -76,8 +76,13 @@ func ParseProxyLine(line string) (*url.URL, error) {
 			return nil, err
 		}
 		return u, nil
+	case 3:
+		return nil, fmt.Errorf("expected host:port:user:pass (got host:port:user only)")
 	case 4:
 		host, port, user, pass := parts[0], parts[1], parts[2], parts[3]
+		if pass == "" {
+			return nil, fmt.Errorf("empty proxy password")
+		}
 		u, err := url.Parse(fmt.Sprintf("http://%s:%s", host, port))
 		if err != nil {
 			return nil, err

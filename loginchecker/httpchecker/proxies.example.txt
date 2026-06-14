@@ -4,5 +4,8 @@
 # user:pass@host:port
 # http://user:pass@host:port
 #
-# Example (Webshare rotating residential):
-# p.webshare.io:80:YOUR_USER:YOUR_PASS
+# IPRoyal residential (sticky session — use lifetime >= 10m for Semrush/BuzzSumo login flows):
+# geo.iproyal.com:12321:USER:PASS_session-MYID_lifetime-10m
+#
+# WARNING: _lifetime-3s rotates IP every 3 seconds. Semrush login takes ~6-15s and
+# needs the same IP for all HTTP steps — use _lifetime-10m or higher.

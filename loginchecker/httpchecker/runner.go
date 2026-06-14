@@ -72,7 +72,11 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 	}
 	fmt.Printf("  Output   : %s\n", resultsDir)
 	fmt.Println("============================================================")
-	fmt.Println()
+	if proxyPool != nil {
+		printProxyStartupReport(proxyPool, cfg.ID)
+	} else {
+		fmt.Println()
+	}
 
 	jobs := make(chan Account, w*2)
 	var wg sync.WaitGroup
