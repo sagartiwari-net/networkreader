@@ -21,8 +21,10 @@
     "authorize_url": "https://www.semrush.com/sso/authorize",
     "sso_options_url": "https://www.semrush.com/sso/options?version=4.4.1",
     "olaf_init_url": "https://www.semrush.com/olaf/init",
-    "dashboard_url": "https://www.semrush.com/",
-    "account_query_url": "https://www.semrush.com/",
+    "dashboard_url": "https://www.semrush.com/home/",
+    "subscription_page_url": "https://www.semrush.com/accounts/subscription-info/",
+    "account_query_url": "https://www.semrush.com/accounts/subscription-info/api/v1/header/",
+    "toolkits_summary_url": "https://www.semrush.com/accounts/subscription-info/api/v1/toolkits/summary/",
     "sso_version": "4.4.1",
     "user_agent_hash": "8109d0ebea1d682bbe7bc3ab7242c807"
   },
@@ -88,14 +90,31 @@
       }
     },
     {
-      "id": "dashboard",
-      "name": "Fetch dashboard for plan hints (temporary until subscription API captured)",
+      "id": "subscription_header",
+      "name": "Fetch subscription plan (GET /accounts/subscription-info/api/v1/header/)",
       "optional": true,
       "method": "GET",
-      "url": "{{dashboard_url}}",
+      "url": "{{account_query_url}}",
       "headers": {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "{{login_url}}",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "{{subscription_page_url}}",
+        "User-Agent": "{{user_agent}}"
+      },
+      "extract": {
+        "plan_name": "subscription.title",
+        "is_free": "subscription.is_free",
+        "paid_till": "subscription.paid_till"
+      }
+    },
+    {
+      "id": "toolkits_summary",
+      "name": "Fallback — purchased toolkit tiers",
+      "optional": true,
+      "method": "GET",
+      "url": "{{toolkits_summary_url}}",
+      "headers": {
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "{{subscription_page_url}}",
         "User-Agent": "{{user_agent}}"
       }
     }
@@ -151,8 +170,8 @@
   "notes": [
     "Login flow from network.ndjson capture (POST /sso/authorize with email/password JSON).",
     "user_agent_hash is FingerprintJS visitorId — update from browser DevTools if checks fail with ERROR_UAHASH_INVALID.",
-    "Capture was stopped before login response + subscription API — run ONF again: login successfully, open Profile → Subscription Info, then stop capture.",
-    "Update account_query_url once subscription XHR is found in network.ndjson.",
+    "Plan API from capture: GET /accounts/subscription-info/api/v1/header/ → subscription.title (Free/Pro/Guru/Business).",
+    "Fallback: GET /accounts/subscription-info/api/v1/toolkits/summary/ → tiers with is_purchased=true.",
     "Semrush uses FingerprintJS user_agent_hash + _sm_bot cookies — pure HTTP cannot fully bypass reCAPTCHA on bulk checks.",
     "HTTP 201 on /sso/authorize = success. reCAPTCHA hits go to recaptcha_required.txt.",
     "For fewer captchas: 1 worker, unique residential IP per login, update user_agent_hash from browser.",

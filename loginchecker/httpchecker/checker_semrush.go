@@ -153,9 +153,16 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		result.PlanName = plan
 	}
 
-	// Step 5: fetch dashboard / account page for plan (until dedicated API captured)
+	// Step 5: subscription header API (from ONF capture — Profile → Subscription Info)
 	if result.PlanName == "" {
-		homeURL := c.cfg.Var("dashboard_url", c.cfg.BaseURL()+"/")
+		if plan, ok := c.fetchSemrushSubscriptionPlan(client); ok {
+			result.PlanName = plan
+		}
+	}
+
+	// Step 6: fallback — dashboard HTML (legacy)
+	if result.PlanName == "" {
+		homeURL := c.cfg.Var("dashboard_url", c.cfg.BaseURL()+"/home/")
 		homeBody, homeStatus, _, err := c.doRequest(client, "GET", homeURL, map[string]string{
 			"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 			"Referer":    referer,
@@ -172,13 +179,88 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		result.PlanName = "Logged In"
 		result.PlanLabel = "UNKNOWN"
 		result.Status = StatusHit
-		result.Reason = "login ok — plan API not in capture yet; re-capture after opening Subscription Info"
+		result.Reason = "login ok — subscription API unreachable"
 		return result
 	}
 
 	result.PlanLabel = classifySemrushPlan(result.PlanName)
 	result.Status = StatusHit
 	return result
+}
+
+func (c *Checker) fetchSemrushSubscriptionPlan(client *http.Client) (string, bool) {
+	subReferer := c.cfg.Var("subscription_page_url", c.cfg.BaseURL()+"/accounts/subscription-info/")
+	apiHeaders := map[string]string{
+		"Accept":     "application/json, text/plain, */*",
+		"Referer":    subReferer,
+		"User-Agent": c.cfg.UserAgent,
+	}
+
+	headerURL := c.cfg.AccountQueryURL()
+	headerBody, headerStatus, _, err := c.doRequest(client, "GET", headerURL, apiHeaders, "")
+	if err == nil && headerStatus == http.StatusOK {
+		if plan, ok := parseSemrushSubscriptionHeader(headerBody); ok {
+			return plan, true
+		}
+	}
+
+	toolkitsURL := c.cfg.Var("toolkits_summary_url", c.cfg.BaseURL()+"/accounts/subscription-info/api/v1/toolkits/summary/")
+	toolkitsBody, toolkitsStatus, _, err := c.doRequest(client, "GET", toolkitsURL, apiHeaders, "")
+	if err == nil && toolkitsStatus == http.StatusOK {
+		if plan, ok := extractSemrushPurchasedToolkits(toolkitsBody); ok {
+			return plan, true
+		}
+	}
+
+	return "", false
+}
+
+func parseSemrushSubscriptionHeader(body string) (string, bool) {
+	title, _ := jsonPathString(body, "subscription.title")
+	isFree, _ := jsonPathString(body, "subscription.is_free")
+	isSubUser, _ := jsonPathString(body, "subscription.is_sub_user")
+	paidTill, _ := jsonPathString(body, "subscription.paid_till")
+
+	title = strings.TrimSpace(title)
+	if title != "" {
+		if isSubUser == "true" && !strings.Contains(strings.ToLower(title), "sub") {
+			title += " (Sub User)"
+		}
+		return title, true
+	}
+	if isFree == "true" {
+		return "Free", true
+	}
+	if paidTill != "" && paidTill != "null" {
+		return "Paid", true
+	}
+	return "", false
+}
+
+func extractSemrushPurchasedToolkits(body string) (string, bool) {
+	var data struct {
+		Toolkits []struct {
+			Tiers []struct {
+				Title       string `json:"title"`
+				IsPurchased bool   `json:"is_purchased"`
+			} `json:"tiers"`
+		} `json:"toolkits"`
+	}
+	if err := json.Unmarshal([]byte(body), &data); err != nil {
+		return "", false
+	}
+	var parts []string
+	for _, tk := range data.Toolkits {
+		for _, tier := range tk.Tiers {
+			if tier.IsPurchased {
+				parts = append(parts, strings.TrimSpace(tier.Title))
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	return strings.Join(parts, " + "), true
 }
 
 func (c *Checker) fetchURL(client *http.Client, rawURL string, headers map[string]string) (string, int, error) {
@@ -328,6 +410,7 @@ func semrushAuthSucceeded(body string, status int) bool {
 
 func extractSemrushPlanFromJSON(body string) (string, bool) {
 	for _, path := range []string{
+		"subscription.title",
 		"subscription.name",
 		"subscription.plan",
 		"plan.name",
@@ -335,6 +418,7 @@ func extractSemrushPlanFromJSON(body string) (string, bool) {
 		"product.name",
 		"toolkit.name",
 		"data.subscription.name",
+		"data.subscription.title",
 		"data.plan.name",
 	} {
 		if val, ok := jsonPathString(body, path); ok && val != "" {
