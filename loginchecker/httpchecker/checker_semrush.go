@@ -170,9 +170,10 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		return result
 	}
 
-	if !semrushApplySSOToken(client, authBody) {
-		result.Status = StatusFail
-		result.Reason = "login response missing SSO token"
+	if !semrushApplySSOToken(client, authBody, authHeaders) {
+		st, reason := semrushMissingTokenFailure(authBody, authStatus)
+		result.Status = st
+		result.Reason = reason
 		return result
 	}
 
@@ -242,9 +243,29 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 	return result
 }
 
-func semrushApplySSOToken(client *http.Client, authBody string) bool {
-	token, ok := jsonPathString(authBody, "token")
-	if !ok || token == "" {
+func semrushParseSSOToken(authBody string, headers http.Header) string {
+	if token, ok := jsonPathString(authBody, "token"); ok && token != "" {
+		return token
+	}
+	if headers != nil {
+		for _, raw := range headers.Values("Set-Cookie") {
+			for _, part := range strings.Split(raw, ";") {
+				part = strings.TrimSpace(part)
+				if strings.HasPrefix(part, "sso_token=") {
+					val := strings.TrimPrefix(part, "sso_token=")
+					if val != "" {
+						return val
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func semrushApplySSOToken(client *http.Client, authBody string, headers http.Header) bool {
+	token := semrushParseSSOToken(authBody, headers)
+	if token == "" {
 		return false
 	}
 	if client == nil || client.Jar == nil {
@@ -276,6 +297,27 @@ func semrushApplySSOToken(client *http.Client, authBody string) bool {
 	return true
 }
 
+func semrushMissingTokenFailure(authBody string, authStatus int) (CheckStatus, string) {
+	if fail := parseSemrushAuthFailure(authBody, authStatus); fail != "" {
+		if fail == "recaptcha_required" {
+			return StatusRecaptchaRequired, "reCAPTCHA required — add twocaptcha_api_key or use fresh proxy IP"
+		}
+		return StatusFail, fail
+	}
+	trimmed := strings.TrimSpace(authBody)
+	if trimmed == "" || trimmed == "{}" {
+		return StatusRecaptchaRequired, "reCAPTCHA/IP block — empty authorize response (try residential proxy or 2captcha)"
+	}
+	if semrushResponseNeedsRecaptcha(authBody) {
+		return StatusRecaptchaRequired, "reCAPTCHA required — Semrush blocked login from this IP"
+	}
+	snippet := trimmed
+	if len(snippet) > 120 {
+		snippet = snippet[:120] + "..."
+	}
+	return StatusError, fmt.Sprintf("authorize HTTP %d without SSO token: %s", authStatus, snippet)
+}
+
 func semrushAuthSessionFromBody(body string) (bool, string) {
 	token, hasToken := jsonPathString(body, "token")
 	userID, hasUser := jsonPathString(body, "user_id")
@@ -296,11 +338,13 @@ func (c *Checker) postSemrushAuthorize(client *http.Client, email, password, uaH
 	}
 	authJSON, _ := json.Marshal(authPayload)
 	return c.doRequest(client, "POST", c.cfg.SemrushAuthorizeURL(), map[string]string{
-		"Accept":       "application/json, text/plain, */*",
-		"Content-Type": "application/json",
-		"Origin":       c.cfg.BaseURL(),
-		"Referer":      referer,
-		"User-Agent":   c.cfg.UserAgent,
+		"Accept":          "application/json, text/plain, */*",
+		"Accept-Encoding": "gzip, deflate",
+		"Accept-Language": "en-US,en;q=0.9",
+		"Content-Type":    "application/json",
+		"Origin":          c.cfg.BaseURL(),
+		"Referer":         referer,
+		"User-Agent":      c.cfg.UserAgent,
 	}, string(authJSON))
 }
 

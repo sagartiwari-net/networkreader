@@ -82,10 +82,11 @@ func (c *Checker) freshClient(proxyURL *url.URL) (*http.Client, error) {
 	transport := &http.Transport{}
 	if proxyURL != nil {
 		transport.Proxy = http.ProxyURL(proxyURL)
-		// Fresh TCP per request helps rotating residential proxies assign a new IP.
 		transport.DisableKeepAlives = true
 		transport.MaxConnsPerHost = 2
 	}
+	// Avoid brotli responses that Go cannot decode in doRequest.
+	transport.DisableCompression = true
 	return &http.Client{
 		Timeout:   timeout,
 		Jar:       jar,
