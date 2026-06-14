@@ -4,9 +4,10 @@
   "description": "Inertia JSON login — built from ONF network.ndjson (app.buzzsumo.com)",
   "source_capture": "task_20260613_203330",
   "settings": {
-    "workers": 50,
+    "workers": 5,
     "timeout_seconds": 30,
-    "retry_on_error": 1
+    "retry_on_error": 3,
+    "delay_ms": 400
   },
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
   "credentials": {
@@ -210,11 +211,14 @@
     "console_hit": "[HIT] {{email}} | Active Plan: {{plan_name}} ({{plan_label}}) | stripe={{stripe_plan_id}} | limits: searches={{searches_limit}} alerts={{alerts_limit}}",
     "console_fail": "[FAIL] {{email}} | {{reason}}",
     "files": {
-      "hits": "results/hits.txt",
-      "hits_by_plan": "results/by_plan/{{plan_label}}.txt",
-      "paid": "results/paid.txt",
-      "free_trial": "results/free_trial.txt",
-      "invalid": "results/invalid.txt"
+      "hits": "results/buzzsumo/run_<timestamp>/hits.txt",
+      "hits_by_plan": "results/buzzsumo/run_<timestamp>/by_plan/{{plan_label}}.txt",
+      "paid": "results/buzzsumo/run_<timestamp>/paid.txt",
+      "free_trial": "results/buzzsumo/run_<timestamp>/free_trial.txt",
+      "invalid": "results/buzzsumo/run_<timestamp>/invalid.txt",
+      "rate_limited": "results/buzzsumo/run_<timestamp>/rate_limited.txt",
+      "errors": "results/buzzsumo/run_<timestamp>/errors.txt",
+      "summary": "results/buzzsumo/run_<timestamp>/summary.txt"
     }
   },
   "notes": [

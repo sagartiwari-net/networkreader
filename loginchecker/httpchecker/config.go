@@ -22,6 +22,7 @@ type Settings struct {
 	Workers        int `json:"workers"`
 	TimeoutSeconds int `json:"timeout_seconds"`
 	RetryOnError   int `json:"retry_on_error"`
+	DelayMS        int `json:"delay_ms"`
 }
 
 type Step struct {
@@ -71,10 +72,16 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	if cfg.Settings.Workers <= 0 {
-		cfg.Settings.Workers = 50
+		cfg.Settings.Workers = 5
 	}
 	if cfg.Settings.TimeoutSeconds <= 0 {
 		cfg.Settings.TimeoutSeconds = 30
+	}
+	if cfg.Settings.RetryOnError <= 0 {
+		cfg.Settings.RetryOnError = 3
+	}
+	if cfg.Settings.DelayMS <= 0 {
+		cfg.Settings.DelayMS = 400
 	}
 	if cfg.UserAgent == "" {
 		cfg.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"

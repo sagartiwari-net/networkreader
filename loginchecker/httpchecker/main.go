@@ -11,7 +11,7 @@ import (
 func main() {
 	configPath := flag.String("config", "", "Checker config JSON")
 	accountsPath := flag.String("accounts", "", "email:password wordlist")
-	resultsDir := flag.String("out", "", "Output directory for hits")
+	resultsDir := flag.String("out", "", "Output directory (default: results/<site>/run_<timestamp>/)")
 	workers := flag.Int("workers", 0, "Parallel workers (0 = use config default)")
 	flag.Parse()
 
@@ -24,7 +24,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
 			exitCode = 1
 		} else {
-			_, _, _, err = runChecker(RunOptions{
+			_, _, err = runChecker(RunOptions{
 				ConfigPath:   cfgPath,
 				AccountsPath: accPath,
 				ResultsDir:   outDir,
@@ -57,13 +57,11 @@ func main() {
 	}
 
 	outDir := *resultsDir
-	if outDir == "" {
-		outDir = filepath.Join(baseDir, "results")
-	} else if !filepath.IsAbs(outDir) {
+	if outDir != "" && !filepath.IsAbs(outDir) {
 		outDir = resolvePath(baseDir, outDir)
 	}
 
-	if _, _, _, err := runChecker(RunOptions{
+	if _, _, err := runChecker(RunOptions{
 		ConfigPath:   cfgPath,
 		AccountsPath: accPath,
 		ResultsDir:   outDir,
