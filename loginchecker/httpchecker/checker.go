@@ -99,6 +99,13 @@ func (c *Checker) freshClient(proxyURL *url.URL) (*http.Client, error) {
 }
 
 func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
+	if c.cfg.ID == "semrush" {
+		return c.checkSemrush(email, password, proxyURL)
+	}
+	return c.checkBuzzsumo(email, password, proxyURL)
+}
+
+func (c *Checker) checkBuzzsumo(email, password string, proxyURL *url.URL) CheckResult {
 	result := CheckResult{Email: email, Password: password}
 
 	client, err := c.freshClient(proxyURL)

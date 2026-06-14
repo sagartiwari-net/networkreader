@@ -137,3 +137,33 @@ func (c *Config) BillingURL() string {
 	}
 	return c.BaseURL() + "/settings/billing"
 }
+
+func (c *Config) Var(key, fallback string) string {
+	if c.Variables == nil {
+		return fallback
+	}
+	if v := c.Variables[key]; v != "" {
+		return v
+	}
+	return fallback
+}
+
+func (c *Config) SemrushAuthorizeURL() string {
+	return c.Var("authorize_url", c.BaseURL()+"/sso/authorize")
+}
+
+func (c *Config) SemrushSSOOptionsURL() string {
+	if v := c.Variables["sso_options_url"]; v != "" {
+		return v
+	}
+	ver := c.Var("sso_version", "4.4.1")
+	return c.BaseURL() + "/sso/options?version=" + ver
+}
+
+func (c *Config) SemrushOlafInitURL() string {
+	return c.Var("olaf_init_url", c.BaseURL()+"/olaf/init")
+}
+
+func (c *Config) SemrushUserAgentHash() string {
+	return c.Var("user_agent_hash", "")
+}

