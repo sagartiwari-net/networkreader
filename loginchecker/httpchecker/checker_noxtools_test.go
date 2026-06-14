@@ -30,3 +30,53 @@ func TestNoxtoolsLoginSucceeded(t *testing.T) {
 		t.Fatal("expected fail on login page with errors")
 	}
 }
+
+func TestParseNoxtoolsMemberPlansNoActive(t *testing.T) {
+	html := `<h3 id="no_subscription">You have no active subscriptions</h3>`
+	info := parseNoxtoolsMemberPlans(html)
+	if !info.NoActive || len(info.Active) != 0 {
+		t.Fatalf("got %+v", info)
+	}
+	name, label := formatNoxtoolsPlanResult(info)
+	if name != "No Active Subscription" || label != "FREE" {
+		t.Fatalf("got %q / %q", name, label)
+	}
+}
+
+func TestParseNoxtoolsMemberPlansActive(t *testing.T) {
+	html := `<div class="subscription-item">
+		<strong>Semrush Guru</strong>
+		<span class="text-success">Active</span>
+	</div>
+	<div class="subscription-item">
+		<strong>SkillShare</strong>
+		<span class="text-success">Active</span>
+	</div>`
+	info := parseNoxtoolsMemberPlans(html)
+	if len(info.Active) != 2 {
+		t.Fatalf("got %+v", info)
+	}
+	name, label := formatNoxtoolsPlanResult(info)
+	if name != "Semrush Guru | SkillShare" || label != "PAID" {
+		t.Fatalf("got %q / %q", name, label)
+	}
+}
+
+func TestParseNoxtoolsMemberPlansExpiredOnly(t *testing.T) {
+	html := `<div class="subscription-item">
+		<strong>Kwfinder</strong>
+		<span class="text-danger">Expired</span>
+	</div>`
+	info := parseNoxtoolsMemberPlans(html)
+	name, label := formatNoxtoolsPlanResult(info)
+	if name != "Expired: Kwfinder" || label != "EXPIRED" {
+		t.Fatalf("got %q / %q", name, label)
+	}
+}
+
+func TestParseNoxtoolsLastPaidProduct(t *testing.T) {
+	html := `<table class="am-payment-table"><tr><td>25 Feb 2026</td><td><a>15JTJ/1</a></td><td>SkillShare</td><td>Stripe</td><td>99.00 INR</td></tr></table>`
+	if got := parseNoxtoolsLastPaidProduct(html); got != "SkillShare" {
+		t.Fatalf("got %q", got)
+	}
+}
