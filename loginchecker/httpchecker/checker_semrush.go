@@ -22,6 +22,7 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		result.Reason = err.Error()
 		return result
 	}
+	defer clearHTTPClientSession(client, c.cfg.BaseURL(), "https://www.semrush.com")
 
 	uaHash := c.cfg.SemrushUserAgentHash()
 	if uaHash == "" {
@@ -33,11 +34,10 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 	loginURL := c.cfg.LoginURL()
 	referer := loginURL
 
-	// Step 1: GET login page (session + site_csrftoken cookies)
-	_, loginStatus, err := c.fetchURL(client, loginURL, map[string]string{
+	// Step 1: GET login page (fresh PHPSESSID + site_csrftoken — no reused cookies)
+	_, loginStatus, err := c.fetchURL(client, loginURL, c.semrushHeaders(referer, map[string]string{
 		"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-		"User-Agent": c.cfg.UserAgent,
-	})
+	}))
 	if err != nil {
 		status, reason := c.resultFromRequestErr("login page", err)
 		result.Status = status
@@ -56,17 +56,13 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 	}
 
 	// Step 2: GET /olaf then POST /olaf/init (_sm_bot session bootstrap)
-	_, _, _, _ = c.doRequest(client, "GET", c.cfg.BaseURL()+"/olaf", map[string]string{
-		"Accept":     "*/*",
-		"Referer":    referer,
-		"User-Agent": c.cfg.UserAgent,
-	}, "")
-	_, olafStatus, _, err := c.doRequest(client, "POST", c.cfg.SemrushOlafInitURL(), map[string]string{
-		"Accept":     "*/*",
-		"Origin":     c.cfg.BaseURL(),
-		"Referer":    referer,
-		"User-Agent": c.cfg.UserAgent,
-	}, "")
+	_, _, _, _ = c.doRequest(client, "GET", c.cfg.BaseURL()+"/olaf", c.semrushHeaders(referer, map[string]string{
+		"Accept": "*/*",
+	}), "")
+	_, olafStatus, _, err := c.doRequest(client, "POST", c.cfg.SemrushOlafInitURL(), c.semrushHeaders(referer, map[string]string{
+		"Accept": "*/*",
+		"Origin": c.cfg.BaseURL(),
+	}), "")
 	if err != nil {
 		status, reason := c.resultFromRequestErr("olaf/init", err)
 		result.Status = status
@@ -81,13 +77,11 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 
 	// Step 3: POST /sso/options (SSO flags — may indicate captcha)
 	optsBody := fmt.Sprintf(`{"withCredentials":true,"user-agent-hash":%s}`, jsonString(uaHash))
-	optsResp, optsStatus, _, err := c.doRequest(client, "POST", c.cfg.SemrushSSOOptionsURL(), map[string]string{
+	optsResp, optsStatus, _, err := c.doRequest(client, "POST", c.cfg.SemrushSSOOptionsURL(), c.semrushHeaders(referer, map[string]string{
 		"Accept":       "application/json, text/plain, */*",
 		"Content-Type": "application/json",
 		"Origin":       c.cfg.BaseURL(),
-		"Referer":      referer,
-		"User-Agent":   c.cfg.UserAgent,
-	}, optsBody)
+	}), optsBody)
 	if err != nil {
 		status, reason := c.resultFromRequestErr("sso/options", err)
 		result.Status = status
@@ -99,23 +93,11 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		result.Reason = rateLimitReason("sso/options HTTP 429")
 		return result
 	}
-	var captchaToken string
-	var capErr error
-	if semrushOptionsRequireRecaptcha(optsResp) || semrushResponseNeedsRecaptcha(optsResp) {
-		captchaToken, capErr = c.solveSemrushRecaptcha(loginURL)
-		if captchaToken == "" {
-			result.Status = StatusRecaptchaRequired
-			if capErr != nil {
-				result.Reason = capErr.Error()
-			} else {
-				result.Reason = "reCAPTCHA required — add twocaptcha_api_key to semrush.json variables"
-			}
-			return result
-		}
-	}
 
-	// Step 4: POST /sso/authorize
-	authBody, authStatus, authHeaders, err := c.postSemrushAuthorize(client, email, password, uaHash, referer, captchaToken)
+	// Step 4: POST /sso/authorize — try first even when opts flags recaptcha_authorize.
+	// Semrush sets recaptcha_authorize:true for all fresh sessions; some proxy IPs still
+	// accept empty g-recaptcha-response. Only block when authorize actually rejects captcha.
+	authBody, authStatus, authHeaders, err := c.postSemrushAuthorize(client, email, password, uaHash, referer, "")
 	if err != nil {
 		status, reason := c.resultFromRequestErr("sso/authorize", err)
 		result.Status = status
@@ -127,10 +109,11 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		result.Reason = rateLimitReason("sso/authorize HTTP 429")
 		return result
 	}
+
+	var captchaToken string
+	var capErr error
 	if semrushNeedsRecaptchaRetry(authBody, authStatus) {
-		if captchaToken == "" {
-			captchaToken, capErr = c.solveSemrushRecaptcha(loginURL)
-		}
+		captchaToken, capErr = c.solveSemrushRecaptcha(loginURL)
 		if captchaToken == "" {
 			result.Status = StatusRecaptchaRequired
 			if capErr != nil {
@@ -145,6 +128,11 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 			status, reason := c.resultFromRequestErr("sso/authorize retry", err)
 			result.Status = status
 			result.Reason = reason
+			return result
+		}
+		if authStatus == http.StatusTooManyRequests {
+			result.Status = StatusRateLimited
+			result.Reason = rateLimitReason("sso/authorize retry HTTP 429")
 			return result
 		}
 	}
@@ -345,15 +333,28 @@ func (c *Checker) postSemrushAuthorize(client *http.Client, email, password, uaH
 		"password":             password,
 	}
 	authJSON, _ := json.Marshal(authPayload)
-	return c.doRequest(client, "POST", c.cfg.SemrushAuthorizeURL(), map[string]string{
+	return c.doRequest(client, "POST", c.cfg.SemrushAuthorizeURL(), c.semrushHeaders(referer, map[string]string{
 		"Accept":          "application/json, text/plain, */*",
 		"Accept-Encoding": "gzip, deflate",
-		"Accept-Language": "en-US,en;q=0.9",
 		"Content-Type":    "application/json",
 		"Origin":          c.cfg.BaseURL(),
-		"Referer":         referer,
+	}), string(authJSON))
+}
+
+func (c *Checker) semrushHeaders(referer string, extra map[string]string) map[string]string {
+	h := map[string]string{
 		"User-Agent":      c.cfg.UserAgent,
-	}, string(authJSON))
+		"Accept-Language": "en-US,en;q=0.9",
+		"Cache-Control":   "no-cache, no-store, must-revalidate",
+		"Pragma":          "no-cache",
+	}
+	if referer != "" {
+		h["Referer"] = referer
+	}
+	for k, v := range extra {
+		h[k] = v
+	}
+	return h
 }
 
 func semrushNeedsRecaptchaRetry(body string, status int) bool {

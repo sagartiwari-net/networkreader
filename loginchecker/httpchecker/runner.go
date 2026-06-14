@@ -227,6 +227,9 @@ func isRetryableCheckResult(res CheckResult) bool {
 	if res.Status == StatusRateLimited {
 		return true
 	}
+	if res.Status == StatusRecaptchaRequired {
+		return true
+	}
 	if res.Status == StatusError {
 		lower := strings.ToLower(res.Reason)
 		return strings.Contains(lower, "timeout") || strings.Contains(lower, "gateway timeout")

@@ -79,10 +79,13 @@ func (c *Checker) freshClient(proxyURL *url.URL) (*http.Client, error) {
 		return nil, err
 	}
 	timeout := time.Duration(c.cfg.Settings.TimeoutSeconds) * time.Second
-	transport := &http.Transport{}
+	transport := &http.Transport{
+		DisableKeepAlives:  true,
+		MaxIdleConns:       0,
+		MaxIdleConnsPerHost: 0,
+	}
 	if proxyURL != nil {
 		transport.Proxy = http.ProxyURL(proxyURL)
-		transport.DisableKeepAlives = true
 		transport.MaxConnsPerHost = 2
 	}
 	// Avoid brotli responses that Go cannot decode in doRequest.
@@ -98,6 +101,24 @@ func (c *Checker) freshClient(proxyURL *url.URL) (*http.Client, error) {
 			return nil
 		},
 	}, nil
+}
+
+func clearHTTPClientSession(client *http.Client, bases ...string) {
+	if client == nil {
+		return
+	}
+	if client.Jar != nil {
+		for _, base := range bases {
+			u, err := url.Parse(base)
+			if err != nil {
+				continue
+			}
+			client.Jar.SetCookies(u, []*http.Cookie{})
+		}
+	}
+	if tr, ok := client.Transport.(*http.Transport); ok {
+		tr.CloseIdleConnections()
+	}
 }
 
 func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
