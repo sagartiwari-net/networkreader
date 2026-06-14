@@ -56,6 +56,14 @@ func TestParseAmemberShopMemberPlansSubscriptionItem(t *testing.T) {
 	}
 }
 
+func TestParseAmemberResourceLinks(t *testing.T) {
+	html := `<li id="resource-link-page-12-wrapper"><a href="/page/grammarly">Grammarly</a></li>`
+	tools := parseAmemberResourceLinks(html)
+	if len(tools) != 1 || tools[0] != "Grammarly" {
+		t.Fatalf("got %+v", tools)
+	}
+}
+
 func TestFinalizeAmemberShopPlanInfoDefaultsFree(t *testing.T) {
 	info := finalizeAmemberShopPlanInfo(noxtoolsPlanInfo{})
 	name, label := formatAmemberShopPlanResult(info)

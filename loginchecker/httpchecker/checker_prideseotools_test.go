@@ -31,6 +31,20 @@ func TestPrideSeoToolsMemberPlansNoActive(t *testing.T) {
 	}
 }
 
+func TestPrideSeoToolsResourceLinks(t *testing.T) {
+	html := `<li id="resource-link-link-42-wrapper">
+		<a href="/protect/content/semrush-guru">Semrush Guru</a>
+	</li>
+	<li id="resource-link-link-99-wrapper">
+		<a href="/protect/content/ahrefs">Ahrefs</a>
+	</li>`
+	info := parseAmemberShopMemberPage(html)
+	name, label := formatAmemberShopPlanResult(info)
+	if name != "Semrush Guru | Ahrefs" || label != "PAID" {
+		t.Fatalf("got %q / %q", name, label)
+	}
+}
+
 func TestPrideSeoToolsMemberPlansActive(t *testing.T) {
 	html := `<div class="subscription-item">
 		<strong>Lite Plan</strong>

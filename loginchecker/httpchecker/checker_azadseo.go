@@ -17,6 +17,9 @@ var (
 	amemberShopToolCardBlockRE = regexp.MustCompile(`(?is)<div[^>]*class=["'][^"']*(?:product|tool|card|col)[^"']*["'][^>]*>.*?</div>\s*</div>`)
 	amemberShopImgAltRE        = regexp.MustCompile(`(?is)alt=["']([^"']{2,60})["']`)
 	amemberShopSignupPriceRE   = regexp.MustCompile(`(?is)\$\d|for \d+ days|am-product-terms`)
+	amemberResourceBlockRE     = regexp.MustCompile(`(?is)<li[^>]*id=["']resource-link-(?:file|link|folder|page)-\d+-wrapper["'][^>]*>(.*?)</li>`)
+	amemberResourceLinkRE      = regexp.MustCompile(`(?is)<a[^>]+href=["']([^"']+)["'][^>]*>([^<]{2,80})<`)
+	amemberProtectLinkRE       = regexp.MustCompile(`(?is)<a[^>]+href=["'][^"']*/(?:protect|content|folder|page)/[^"']*["'][^>]*>([^<]{2,80})<`)
 )
 
 func (c *Checker) checkAzadseo(email, password string, proxyURL *url.URL) CheckResult {
@@ -171,11 +174,12 @@ func (c *Checker) fetchAmemberShopPlanInfo(client *http.Client, loginResponseBod
 
 	base := c.cfg.BaseURL()
 	memberURL := c.cfg.Var("member_url", base+"/member")
+	homeURL := c.cfg.Var("home_url", base+"/")
 	subURL := c.cfg.Var("subscriptions_url", base+"/member/subscriptions")
 	payURL := c.cfg.Var("payment_history_url", base+"/member/payment-history")
 
 	referer := c.cfg.Var("login_referer", base+"/login")
-	for _, pageURL := range []string{memberURL, subURL, payURL} {
+	for _, pageURL := range []string{memberURL, homeURL, subURL, payURL} {
 		if amemberShopPlanInfoComplete(info) {
 			break
 		}
@@ -237,6 +241,11 @@ func parseAmemberShopMemberPage(body string) noxtoolsPlanInfo {
 	}
 
 	visible := noxtoolsVisibleHTML(body)
+	if resources := parseAmemberResourceLinks(visible); len(resources) > 0 {
+		info.Active = resources
+		info.NoActive = false
+		return info
+	}
 	if hasAmemberShopFreeMarkers(visible) {
 		info.NoActive = true
 		return info
@@ -252,6 +261,72 @@ func parseAmemberShopMemberPage(body string) noxtoolsPlanInfo {
 		return info
 	}
 	return info
+}
+
+func parseAmemberResourceLinks(body string) []string {
+	var tools []string
+	seen := map[string]struct{}{}
+	add := func(name string) {
+		name = strings.TrimSpace(noxtoolsStripHTML(name))
+		if name == "" || isAmemberResourceNoise(name) {
+			return
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		tools = append(tools, name)
+	}
+
+	for _, block := range amemberResourceBlockRE.FindAllStringSubmatch(body, -1) {
+		blockHTML := block[1]
+		for _, m := range amemberResourceLinkRE.FindAllStringSubmatch(blockHTML, -1) {
+			href := strings.ToLower(m[1])
+			if isAmemberResourceHrefNoise(href) {
+				continue
+			}
+			add(m[2])
+		}
+		for _, m := range amemberProtectLinkRE.FindAllStringSubmatch(blockHTML, -1) {
+			add(m[1])
+		}
+	}
+
+	if len(tools) == 0 {
+		for _, m := range amemberProtectLinkRE.FindAllStringSubmatch(body, -1) {
+			add(m[1])
+		}
+	}
+
+	return tools
+}
+
+func isAmemberResourceHrefNoise(href string) bool {
+	noise := []string{"/login", "/signup", "/logout", "sendpass", "facebook.com", "m.me/", "amember.com"}
+	for _, n := range noise {
+		if strings.Contains(href, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAmemberResourceNoise(name string) bool {
+	if isNoxtoolsNoisePlan(name) {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(name))
+	noise := []string{
+		"login", "sign up", "signup", "logout", "password", "forgot",
+		"click here", "read more", "home", "contact", "support",
+	}
+	for _, n := range noise {
+		if lower == n || strings.HasPrefix(lower, n+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 func parseAmemberShopAccessibleTools(body string) []string {

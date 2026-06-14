@@ -15,6 +15,7 @@
     "login_url": "https://members.prideseotools.com/login",
     "login_referer": "https://members.prideseotools.com/login",
     "member_url": "https://members.prideseotools.com/member",
+    "home_url": "https://members.prideseotools.com/",
     "subscriptions_url": "https://members.prideseotools.com/member/subscriptions",
     "payment_history_url": "https://members.prideseotools.com/member/payment-history"
   },
@@ -57,8 +58,8 @@
     "POST fields: amember_login, amember_pass, login_attempt_id, _referer.",
     "Success: redirect to /member (solid-color aMember dashboard).",
     "Failure: div.am-errors — 'The user name or password is incorrect'.",
-    "FREE: #no_subscription or no active plans on /member.",
-    "PAID: subscription-item or /member/go/* tool links.",
+    "FREE: #no_subscription or no resource-link widgets on /member.",
+    "PAID: resource-link-file/link/folder/page widgets or subscription-item.",
     "Browser may show Cloudflare Turnstile on some IPs — use residential proxy if blocked."
   ]
 }
