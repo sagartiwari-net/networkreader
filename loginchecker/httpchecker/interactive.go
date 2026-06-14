@@ -165,10 +165,13 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 	fmt.Printf("    %d = Browse for custom config file...\n", len(configFiles)+1)
 	fmt.Println()
 
-	choice := readLine(fmt.Sprintf("  Enter 1-%d: ", len(configFiles)+1))
+	choice := readLine(fmt.Sprintf("  Enter 1-%d [1]: ", len(configFiles)+1))
+	if choice == "" {
+		choice = "1"
+	}
 	idx, convErr := strconv.Atoi(choice)
 	if convErr != nil || idx < 1 || idx > len(configFiles)+1 {
-		return "", "", "", 0, "", fmt.Errorf("invalid config choice")
+		return "", "", "", 0, "", fmt.Errorf("invalid config choice — enter a number between 1 and %d", len(configFiles)+1)
 	}
 
 	if idx <= len(configFiles) {
