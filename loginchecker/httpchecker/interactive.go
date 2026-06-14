@@ -217,7 +217,7 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 	fmt.Println()
 	fmt.Println("  Proxy mode:")
 	fmt.Println("    1 = Without proxy (normal — use 3-5 workers)")
-	fmt.Println("    2 = With proxy (faster — select proxy file, use 30-60 workers)")
+	fmt.Println("    2 = With proxy (select proxy file — use 10-15 workers for 1 rotating proxy)")
 	proxyChoice := readLine("  Enter 1-2 [1]: ")
 	if proxyChoice == "" {
 		proxyChoice = "1"
@@ -249,10 +249,10 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 		w = 5
 	}
 	if proxyPath != "" && w <= 5 {
-		w = 50
+		w = 12
 	}
 	if proxyPath != "" {
-		fmt.Println("  Tip: Proxy mode — delay auto-off, 30-60 workers recommended")
+		fmt.Println("  Tip: 1 rotating proxy — use 10-15 workers (not 40+). More = proxy/BuzzSumo 429.")
 	} else {
 		fmt.Println("  Tip: Without proxy — BuzzSumo par 3-5 workers use karo (HTTP 429)")
 	}

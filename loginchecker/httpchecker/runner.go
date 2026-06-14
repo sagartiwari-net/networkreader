@@ -79,8 +79,15 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 	var fileMu sync.Mutex
 	start := time.Now()
 	delay := time.Duration(cfg.Settings.DelayMS) * time.Millisecond
+	var proxySem chan struct{}
 	if proxyPool != nil {
-		delay = 0
+		// Avoid hammering a single rotating proxy gateway with 40+ simultaneous logins.
+		maxInflight := proxyPool.MaxInflight()
+		proxySem = make(chan struct{}, maxInflight)
+		if delay <= 0 {
+			delay = 150 * time.Millisecond
+		}
+		fmt.Printf("  Proxy cap : max %d concurrent logins\n", maxInflight)
 	}
 
 	for i := 0; i < w; i++ {
@@ -91,11 +98,17 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 				if delay > 0 {
 					time.Sleep(delay)
 				}
+				if proxySem != nil {
+					proxySem <- struct{}{}
+				}
 				var proxy *url.URL
 				if proxyPool != nil {
 					proxy = proxyPool.Next()
 				}
 				res := checker.Check(acc.Email, acc.Password, proxy)
+				if proxySem != nil {
+					<-proxySem
+				}
 				switch res.Status {
 				case StatusHit:
 					hitCount.Add(1)

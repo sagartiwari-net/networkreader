@@ -104,6 +104,23 @@ func (p *ProxyPool) Len() int {
 	return len(p.proxies)
 }
 
+func (p *ProxyPool) MaxInflight() int {
+	if p == nil || len(p.proxies) == 0 {
+		return 0
+	}
+	if len(p.proxies) == 1 {
+		return 12
+	}
+	n := len(p.proxies) * 4
+	if n > 30 {
+		n = 30
+	}
+	if n < 12 {
+		n = 12
+	}
+	return n
+}
+
 func proxyDisplay(u *url.URL) string {
 	if u == nil {
 		return "direct"
