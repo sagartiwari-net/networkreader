@@ -134,9 +134,10 @@ func configDisplayName(path string, cfg *Config) string {
 	return name
 }
 
-func runInteractive() (configPath, accountsPath, resultsDir string, workers int, err error) {
+func runInteractive() (configPath, accountsPath, resultsDir string, workers int, proxyPath string, err error) {
 	baseDir := exeDir()
 	resultsDir = "" // auto: results/<site>/run_<timestamp>/
+	proxyPath = ""
 
 	fmt.Println()
 	fmt.Println("  ========================================================")
@@ -167,7 +168,7 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 	choice := readLine(fmt.Sprintf("  Enter 1-%d: ", len(configFiles)+1))
 	idx, convErr := strconv.Atoi(choice)
 	if convErr != nil || idx < 1 || idx > len(configFiles)+1 {
-		return "", "", "", 0, fmt.Errorf("invalid config choice")
+		return "", "", "", 0, "", fmt.Errorf("invalid config choice")
 	}
 
 	if idx <= len(configFiles) {
@@ -181,14 +182,14 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 			picked = readLine("  Config path: ")
 		}
 		if picked == "" {
-			return "", "", "", 0, fmt.Errorf("no config selected")
+			return "", "", "", 0, "", fmt.Errorf("no config selected")
 		}
 		configPath = picked
 	}
 
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
-		return "", "", "", 0, err
+		return "", "", "", 0, "", err
 	}
 
 	fmt.Println()
@@ -205,19 +206,56 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 		accountsPath = readLine("  Accounts file: ")
 	}
 	if accountsPath == "" {
-		return "", "", "", 0, fmt.Errorf("no accounts file selected")
+		return "", "", "", 0, "", fmt.Errorf("no accounts file selected")
 	}
 
 	accountsPath = strings.Trim(accountsPath, `"`)
 	if _, statErr := os.Stat(accountsPath); statErr != nil {
-		return "", "", "", 0, fmt.Errorf("accounts file not found: %s", accountsPath)
+		return "", "", "", 0, "", fmt.Errorf("accounts file not found: %s", accountsPath)
+	}
+
+	fmt.Println()
+	fmt.Println("  Proxy mode:")
+	fmt.Println("    1 = Without proxy (normal — use 3-5 workers)")
+	fmt.Println("    2 = With proxy (faster — select proxy file, use 30-60 workers)")
+	proxyChoice := readLine("  Enter 1-2 [1]: ")
+	if proxyChoice == "" {
+		proxyChoice = "1"
+	}
+	if proxyChoice == "2" {
+		fmt.Println()
+		fmt.Println("  Select proxy file (one proxy per line: host:port:user:pass)")
+		proxyPath, err = pickAccountsFileWindows("Select proxy list file")
+		if err != nil {
+			fmt.Println("  File picker unavailable — type full path:")
+			proxyPath = readLine("  Proxy file: ")
+		}
+		proxyPath = strings.Trim(proxyPath, `"`)
+		if proxyPath == "" {
+			return "", "", "", 0, "", fmt.Errorf("no proxy file selected")
+		}
+		if _, statErr := os.Stat(proxyPath); statErr != nil {
+			return "", "", "", 0, "", fmt.Errorf("proxy file not found: %s", proxyPath)
+		}
+		if pool, loadErr := LoadProxyPool(proxyPath); loadErr != nil {
+			return "", "", "", 0, "", loadErr
+		} else {
+			fmt.Printf("  Loaded %d proxy entries\n", pool.Len())
+		}
 	}
 
 	w := cfg.Settings.Workers
 	if w <= 0 {
 		w = 5
 	}
-	fmt.Println("  Tip: BuzzSumo par 3-5 workers use karo — zyada workers = HTTP 429 rate limit")
+	if proxyPath != "" && w <= 5 {
+		w = 50
+	}
+	if proxyPath != "" {
+		fmt.Println("  Tip: Proxy mode — delay auto-off, 30-60 workers recommended")
+	} else {
+		fmt.Println("  Tip: Without proxy — BuzzSumo par 3-5 workers use karo (HTTP 429)")
+	}
 	wInput := readLine(fmt.Sprintf("  Workers [%d]: ", w))
 	if wInput != "" {
 		if parsed, parseErr := strconv.Atoi(wInput); parseErr == nil && parsed > 0 {
@@ -226,5 +264,5 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 	}
 
 	fmt.Println()
-	return configPath, accountsPath, resultsDir, w, nil
+	return configPath, accountsPath, resultsDir, w, proxyPath, nil
 }

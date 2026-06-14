@@ -38,6 +38,7 @@ Results
 HIT           : %d  (valid login — see hits.txt)
 FAIL          : %d  (wrong password — see invalid.txt)
 FB VERIFY     : %d  (login ok but Facebook verify — see facebook_verify.txt)
+INACTIVE      : %d  (paid label but no billing/legacy — see inactive_plan.txt)
 RATE LIMITED  : %d  (HTTP 429 — retry rate_limited.txt with 3 workers)
 ERROR         : %d  (network/other — see errors.txt)
 
@@ -48,6 +49,7 @@ hits.txt      all valid logins with active plan name
 paid.txt      non-free plans
 free_trial.txt free / trial plans
 facebook_verify.txt login ok but needs Facebook connect (ignored)
+inactive_plan.txt paid name but no subscription/billing (ignored)
 invalid.txt   bad credentials
 rate_limited.txt accounts blocked by BuzzSumo — run again later
 errors.txt    other failures
@@ -63,6 +65,7 @@ errors.txt    other failures
 		stats.Hits,
 		stats.Fails,
 		stats.VerifySkip,
+		stats.InactiveSkip,
 		stats.RateLimited,
 		stats.Errors,
 	)
@@ -70,10 +73,11 @@ errors.txt    other failures
 }
 
 type RunStats struct {
-	Total       int
-	Hits        int64
-	Fails       int64
-	VerifySkip  int64
-	RateLimited int64
-	Errors      int64
+	Total        int
+	Hits         int64
+	Fails        int64
+	VerifySkip   int64
+	InactiveSkip int64
+	RateLimited  int64
+	Errors       int64
 }

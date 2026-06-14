@@ -123,3 +123,17 @@ func (c *Config) VerifyURL() string {
 	}
 	return c.BaseURL() + "/verify"
 }
+
+func (c *Config) PricingURL() string {
+	if v := c.Variables["pricing_url"]; v != "" {
+		return v
+	}
+	return c.BaseURL() + "/pricing"
+}
+
+func (c *Config) BillingURL() string {
+	if v := c.Variables["billing_url"]; v != "" {
+		return v
+	}
+	return c.BaseURL() + "/settings/billing"
+}
