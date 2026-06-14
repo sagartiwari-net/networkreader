@@ -131,6 +131,8 @@ func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
 		return c.checkGfxtoolz(email, password, proxyURL)
 	case "azadseo":
 		return c.checkAzadseo(email, password, proxyURL)
+	case "hindseo":
+		return c.checkHindseo(email, password, proxyURL)
 	default:
 		return c.checkBuzzsumo(email, password, proxyURL)
 	}
