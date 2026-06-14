@@ -58,7 +58,7 @@ func (c *Checker) checkHindseo(email, password string, proxyURL *url.URL) CheckR
 		return result
 	}
 
-	finalURL, postBody, postStatus, err := c.postHindseoLogin(client, loginURL, email, password, attemptID, referer)
+	finalURL, postBody, postStatus, err := c.postAmemberLoginWithAttemptID(client, loginURL, email, password, attemptID, referer)
 	if err != nil {
 		status, reason := c.resultFromRequestErr("login POST", err)
 		result.Status = status
@@ -96,7 +96,7 @@ func (c *Checker) checkHindseo(email, password string, proxyURL *url.URL) CheckR
 	return result
 }
 
-func (c *Checker) postHindseoLogin(client *http.Client, loginURL, email, password, attemptID, referer string) (finalURL, body string, status int, err error) {
+func (c *Checker) postAmemberLoginWithAttemptID(client *http.Client, loginURL, email, password, attemptID, referer string) (finalURL, body string, status int, err error) {
 	form := url.Values{}
 	form.Set("amember_login", email)
 	form.Set("amember_pass", password)
