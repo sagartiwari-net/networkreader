@@ -69,7 +69,20 @@ func TestParseNoxtoolsMemberPlansExpiredOnly(t *testing.T) {
 	</div>`
 	info := parseNoxtoolsMemberPlans(html)
 	name, label := formatNoxtoolsPlanResult(info)
-	if name != "Expired: Kwfinder" || label != "EXPIRED" {
+	if name != "Kwfinder (expired)" || label != "EXPIRED" {
+		t.Fatalf("got %q / %q", name, label)
+	}
+}
+
+func TestParseNoxtoolsMemberPlansExpiresInDays(t *testing.T) {
+	html := `<div id="member-main-subscriptions">
+	<div class="subscription-item">
+		<strong><span class="dot"></span>Storyblocks</strong>
+		<span class="text-danger statuspill">Expires in 9 days</span>
+	</div></div>`
+	info := parseNoxtoolsMemberPlans(html)
+	name, label := formatNoxtoolsPlanResult(info)
+	if name != "Storyblocks (9 days left)" || label != "PAID" {
 		t.Fatalf("got %q / %q", name, label)
 	}
 }

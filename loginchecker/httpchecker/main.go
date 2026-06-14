@@ -20,17 +20,17 @@ func main() {
 	exitCode := 0
 
 	if interactive {
-		cfgPath, accPath, outDir, w, proxyFile, err := runInteractive()
+		cfgPath, accPaths, outDir, w, proxyFile, err := runInteractive()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
 			exitCode = 1
 		} else {
 			_, _, err = runChecker(RunOptions{
-				ConfigPath:   cfgPath,
-				AccountsPath: accPath,
-				ResultsDir:   outDir,
-				Workers:      w,
-				ProxyPath:    proxyFile,
+				ConfigPath:    cfgPath,
+				AccountsPaths: accPaths,
+				ResultsDir:    outDir,
+				Workers:       w,
+				ProxyPath:     proxyFile,
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\nError: %v\n", err)

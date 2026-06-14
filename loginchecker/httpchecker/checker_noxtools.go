@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -14,11 +15,15 @@ var (
 	noxLoginAttemptIDRE2 = regexp.MustCompile(`(?i)value=["']([0-9]{8,})["'][^>]*name=["']login_attempt_id["']`)
 	noxAMErrorsRE        = regexp.MustCompile(`(?is)class=["']am-errors["'][^>]*>(.*?)</`)
 	noxSubscriptionItemRE = regexp.MustCompile(`(?is)<div[^>]*class=["'][^"']*subscription-item[^"']*["'][^>]*>(.*?)</div>`)
-	noxStrongStatusRE    = regexp.MustCompile(`(?is)<strong[^>]*>([^<]{2,100})</strong>\s*<span[^>]*class=["'][^"']*(text-success|text-warning|text-danger|text-muted)[^"']*["'][^>]*>([^<]{2,40})</span>`)
-	noxActiveInvoiceRE   = regexp.MustCompile(`(?is)class=["']am-active-invoice["'][^>]*>(.*?)</div>\s*</div>\s*</div>`)
+	noxStrongStatusRE    = regexp.MustCompile(`(?is)<strong[^>]*>(.*?)</strong>\s*<span[^>]*class=["'][^"']*(text-success|text-warning|text-danger|text-muted)[^"']*["'][^>]*>([^<]{2,60})</span>`)
+	noxExpiresInPlanRE   = regexp.MustCompile(`(?is)<strong[^>]*>(.*?)</strong>[\s\S]{0,600}?<span[^>]*>[\s\S]*?(expires\s+in\s+\d+\s+days?)[\s\S]*?</span>`)
+	noxStatusSpanRE      = regexp.MustCompile(`(?is)<span[^>]*class=["'][^"']*(?:statuspill|text-success|text-warning|text-danger|text-muted)[^"']*["'][^>]*>([^<]{2,60})</span>`)
+	noxActiveInvoiceRE   = regexp.MustCompile(`(?is)<div[^>]*class=["'][^"']*am-active-invoice["'][^>]*>(.*?)</div>\s*</div>\s*</div>`)
 	noxProductNameRE     = regexp.MustCompile(`(?is)class=["'][^"']*product-name[^"']*["'][^>]*>([^<]{2,100})<`)
 	noxPaymentRowRE      = regexp.MustCompile(`(?is)<tr[^>]*>(.*?)</tr>`)
 	noxPaymentCellRE     = regexp.MustCompile(`(?is)<td[^>]*>(.*?)</td>`)
+	noxExpiresInDaysRE   = regexp.MustCompile(`(?i)expires\s+in\s+(\d+)\s+days?`)
+	noxDaysLeftRE        = regexp.MustCompile(`(?i)(\d+)\s+days?\s+left`)
 )
 
 type noxtoolsPlanInfo struct {
@@ -209,7 +214,8 @@ func (c *Checker) fetchNoxtoolsPlanInfo(client *http.Client) noxtoolsPlanInfo {
 		payURL := c.cfg.Var("payment_history_url", c.cfg.BaseURL()+"/secure/member/payment-history")
 		payBody, payStatus, _, payErr := c.doRequest(client, "GET", payURL, c.noxtoolsPageHeaders(memberURL), "")
 		if payErr == nil && payStatus == http.StatusOK {
-			payInfo := parseNoxtoolsMemberPlans(noxtoolsVisibleHTML(payBody))
+			payHTML := noxtoolsVisibleHTML(payBody)
+			payInfo := parseNoxtoolsMemberPlans(payHTML)
 			if len(payInfo.Active) > 0 {
 				info.Active = payInfo.Active
 				info.NoActive = false
@@ -217,11 +223,8 @@ func (c *Checker) fetchNoxtoolsPlanInfo(client *http.Client) noxtoolsPlanInfo {
 			if len(payInfo.Expired) > 0 && len(info.Expired) == 0 {
 				info.Expired = payInfo.Expired
 			}
-			if payInfo.LastPaid != "" && info.LastPaid == "" {
+			if payInfo.LastPaid != "" && info.LastPaid == "" && info.NoActive {
 				info.LastPaid = payInfo.LastPaid
-			}
-			if payInfo.NoActive && len(info.Active) == 0 {
-				info.NoActive = true
 			}
 		}
 	}
@@ -265,60 +268,124 @@ func parseNoxtoolsMemberPlans(body string) noxtoolsPlanInfo {
 			return
 		}
 		for _, existing := range *list {
-			if strings.EqualFold(existing, val) {
+			if strings.EqualFold(existing, val) || strings.EqualFold(noxtoolsPlanBaseName(existing), noxtoolsPlanBaseName(val)) {
 				return
 			}
 		}
 		*list = append(*list, val)
 	}
 
+	addActive := func(name, status string) {
+		name = noxtoolsStripHTML(name)
+		if name == "" {
+			return
+		}
+		days, active, expired := parseNoxtoolsExpiryStatus(status)
+		switch {
+		case active:
+			addUnique(&info.Active, formatNoxtoolsActivePlan(name, days))
+		case expired:
+			addUnique(&info.Expired, name)
+		}
+	}
+
 	for _, block := range parseBlocks {
 		for _, m := range noxSubscriptionItemRE.FindAllStringSubmatch(block, -1) {
-			item := m[1]
-			name, status := parseNoxtoolsSubscriptionItem(item)
-			if name == "" {
-				continue
+			name, status := parseNoxtoolsSubscriptionItem(m[1])
+			if status == "" {
+				for _, sm := range noxStatusSpanRE.FindAllStringSubmatch(m[1], -1) {
+					status = sm[1]
+					break
+				}
 			}
-			stLower := strings.ToLower(status)
-			switch {
-			case strings.Contains(stLower, "active"), strings.Contains(stLower, "recurring"):
-				addUnique(&info.Active, name)
-			case strings.Contains(stLower, "expir"), strings.Contains(stLower, "cancel"):
-				addUnique(&info.Expired, name)
-			default:
-				addUnique(&info.Active, name)
-			}
+			addActive(name, status)
+		}
+
+		for _, m := range noxExpiresInPlanRE.FindAllStringSubmatch(block, -1) {
+			name := noxtoolsStripHTML(m[1])
+			status := strings.TrimSpace(m[2])
+			addActive(name, status)
 		}
 
 		for _, m := range noxStrongStatusRE.FindAllStringSubmatch(block, -1) {
-			name := strings.TrimSpace(m[1])
-			statusClass := strings.ToLower(m[2])
-			switch {
-			case strings.Contains(statusClass, "success"):
-				addUnique(&info.Active, name)
-			case strings.Contains(statusClass, "danger"), strings.Contains(statusClass, "muted"):
-				addUnique(&info.Expired, name)
-			default:
-				addUnique(&info.Active, name)
-			}
+			addActive(m[1], m[3])
 		}
 
 		for _, m := range noxActiveInvoiceRE.FindAllStringSubmatch(block, -1) {
-			if prod, ok := extractNoxtoolsProductName(m[1]); ok {
-				addUnique(&info.Active, prod)
+			invoice := m[1]
+			if prod, ok := extractNoxtoolsProductName(invoice); ok {
+				status := ""
+				for _, sm := range noxStatusSpanRE.FindAllStringSubmatch(invoice, -1) {
+					status = sm[1]
+					break
+				}
+				if status == "" {
+					for _, sm := range noxExpiresInDaysRE.FindAllStringSubmatch(invoice, -1) {
+						status = sm[0]
+						break
+					}
+				}
+				addActive(prod, status)
 			}
 		}
 
 		for _, m := range noxProductNameRE.FindAllStringSubmatch(block, -1) {
-			addUnique(&info.Active, m[1])
+			addActive(m[1], "active")
 		}
 	}
 
-	info.LastPaid = parseNoxtoolsLastPaidProduct(body)
+	if info.NoActive {
+		info.LastPaid = parseNoxtoolsLastPaidProduct(body)
+	}
 	if len(info.Active) > 0 {
 		info.NoActive = false
 	}
 	return info
+}
+
+func noxtoolsStripHTML(s string) string {
+	s = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(s, " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func noxtoolsPlanBaseName(plan string) string {
+	if idx := strings.LastIndex(plan, " ("); idx > 0 && strings.HasSuffix(plan, " left)") {
+		return plan[:idx]
+	}
+	if strings.HasPrefix(strings.ToLower(plan), "expired: ") {
+		return strings.TrimSpace(plan[9:])
+	}
+	return plan
+}
+
+func parseNoxtoolsExpiryStatus(status string) (daysLeft int, active bool, expired bool) {
+	st := strings.ToLower(strings.TrimSpace(status))
+	if st == "" {
+		return -1, true, false
+	}
+	if m := noxExpiresInDaysRE.FindStringSubmatch(st); len(m) > 1 {
+		d, _ := strconv.Atoi(m[1])
+		return d, true, false
+	}
+	if m := noxDaysLeftRE.FindStringSubmatch(st); len(m) > 1 {
+		d, _ := strconv.Atoi(m[1])
+		return d, true, false
+	}
+	if strings.Contains(st, "recurring") || strings.Contains(st, "active") {
+		return -1, true, false
+	}
+	if strings.HasPrefix(st, "expired") || strings.Contains(st, "cancelled") || st == "canceled" {
+		return 0, false, true
+	}
+	return -1, true, false
+}
+
+func formatNoxtoolsActivePlan(name string, daysLeft int) string {
+	name = strings.TrimSpace(name)
+	if daysLeft > 0 {
+		return fmt.Sprintf("%s (%d days left)", name, daysLeft)
+	}
+	return name
 }
 
 func extractNoxtoolsBlock(body, startMarker, endMarker string) string {
@@ -337,10 +404,10 @@ func extractNoxtoolsBlock(body, startMarker, endMarker string) string {
 }
 
 func parseNoxtoolsSubscriptionItem(item string) (name, status string) {
-	if m := regexp.MustCompile(`(?is)<strong[^>]*>([^<]{2,100})</strong>`).FindStringSubmatch(item); len(m) > 1 {
-		name = strings.TrimSpace(m[1])
+	if m := regexp.MustCompile(`(?is)<strong[^>]*>(.*?)</strong>`).FindStringSubmatch(item); len(m) > 1 {
+		name = noxtoolsStripHTML(m[1])
 	}
-	if m := regexp.MustCompile(`(?is)<span[^>]*class=["'][^"']*text-(success|danger|warning|muted)[^"']*["'][^>]*>([^<]{2,40})</span>`).FindStringSubmatch(item); len(m) > 2 {
+	if m := regexp.MustCompile(`(?is)<span[^>]*class=["'][^"']*text-(success|danger|warning|muted)[^"']*["'][^>]*>([^<]{2,60})</span>`).FindStringSubmatch(item); len(m) > 2 {
 		status = strings.TrimSpace(m[2])
 	}
 	return name, status
@@ -406,10 +473,14 @@ func formatNoxtoolsPlanResult(info noxtoolsPlanInfo) (planName, planLabel string
 		return "No Active Subscription", "FREE"
 	}
 	if len(info.Expired) > 0 {
-		return "Expired: " + strings.Join(info.Expired, " | "), "EXPIRED"
+		parts := make([]string, len(info.Expired))
+		for i, name := range info.Expired {
+			parts[i] = name + " (expired)"
+		}
+		return strings.Join(parts, " | "), "EXPIRED"
 	}
 	if info.LastPaid != "" {
-		return "Last Paid: " + info.LastPaid, "EXPIRED"
+		return info.LastPaid + " (expired)", "EXPIRED"
 	}
 	return "Logged In", "UNKNOWN"
 }

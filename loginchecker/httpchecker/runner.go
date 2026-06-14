@@ -12,11 +12,12 @@ import (
 )
 
 type RunOptions struct {
-	ConfigPath   string
-	AccountsPath string
-	ResultsDir   string
-	Workers      int
-	ProxyPath    string
+	ConfigPath    string
+	AccountsPath  string
+	AccountsPaths []string
+	ResultsDir    string
+	Workers       int
+	ProxyPath     string
 }
 
 func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
@@ -33,9 +34,9 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 		w = 5
 	}
 
-	accounts, err := ParseAccountsFile(opts.AccountsPath)
+	accounts, err := loadRunAccounts(opts)
 	if err != nil {
-		return RunStats{}, 0, fmt.Errorf("accounts: %w", err)
+		return RunStats{}, 0, err
 	}
 
 	checker, err := NewChecker(cfg)
@@ -63,7 +64,7 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 	fmt.Println("============================================================")
 	fmt.Printf("  HTTP Account Checker — %s\n", cfg.Name)
 	fmt.Printf("  Config   : %s\n", opts.ConfigPath)
-	fmt.Printf("  Accounts : %s (%d lines)\n", opts.AccountsPath, len(accounts))
+	fmt.Printf("  Accounts : %s (%d lines)\n", formatAccountsSource(opts), len(accounts))
 	fmt.Printf("  Workers  : %d  |  Delay: %dms  |  Retry: %d\n", w, cfg.Settings.DelayMS, cfg.Settings.RetryOnError)
 	if proxyPool != nil {
 		fmt.Printf("  Proxy    : %s (%d entries, rotating)\n", opts.ProxyPath, proxyPool.Len())

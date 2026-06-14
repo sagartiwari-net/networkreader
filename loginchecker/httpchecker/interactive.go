@@ -58,8 +58,19 @@ func pauseBeforeExit() {
 }
 
 func pickAccountsFileWindows(title string) (string, error) {
+	paths, err := pickAccountsFilesWindows(title)
+	if err != nil {
+		return "", err
+	}
+	if len(paths) == 0 {
+		return "", fmt.Errorf("no file selected")
+	}
+	return paths[0], nil
+}
+
+func pickAccountsFilesWindows(title string) ([]string, error) {
 	if runtime.GOOS != "windows" {
-		return "", fmt.Errorf("not windows")
+		return nil, fmt.Errorf("not windows")
 	}
 	script := fmt.Sprintf(`
 Add-Type -AssemblyName System.Windows.Forms
@@ -67,12 +78,28 @@ Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.OpenFileDialog
 $d.Title = %q
 $d.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*"
+$d.Multiselect = $true
 $d.InitialDirectory = [Environment]::GetFolderPath('Desktop')
 if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-	Write-Output $d.FileName
+	$d.FileNames
 }
 `, title)
-	return runPowerShellFilePicker(script)
+	out, err := runPowerShellFilePicker(script)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.Trim(line, `"`)
+		if line != "" {
+			paths = append(paths, line)
+		}
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no file selected")
+	}
+	return paths, nil
 }
 
 func pickConfigFileWindows(title, initialDir string) (string, error) {
@@ -134,7 +161,7 @@ func configDisplayName(path string, cfg *Config) string {
 	return name
 }
 
-func runInteractive() (configPath, accountsPath, resultsDir string, workers int, proxyPath string, err error) {
+func runInteractive() (configPath string, accountsPaths []string, resultsDir string, workers int, proxyPath string, err error) {
 	baseDir := exeDir()
 	resultsDir = "" // auto: results/<site>/run_<timestamp>/
 	proxyPath = ""
@@ -171,7 +198,7 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 	}
 	idx, convErr := strconv.Atoi(choice)
 	if convErr != nil || idx < 1 || idx > len(configFiles)+1 {
-		return "", "", "", 0, "", fmt.Errorf("invalid config choice — enter a number between 1 and %d", len(configFiles)+1)
+		return "", nil, "", 0, "", fmt.Errorf("invalid config choice — enter a number between 1 and %d", len(configFiles)+1)
 	}
 
 	if idx <= len(configFiles) {
@@ -185,36 +212,53 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 			picked = readLine("  Config path: ")
 		}
 		if picked == "" {
-			return "", "", "", 0, "", fmt.Errorf("no config selected")
+			return "", nil, "", 0, "", fmt.Errorf("no config selected")
 		}
 		configPath = picked
 	}
 
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
-		return "", "", "", 0, "", err
+		return "", nil, "", 0, "", err
 	}
 
 	fmt.Println()
 	fmt.Printf("  Selected: %s\n", configDisplayName(configPath, cfg))
 	fmt.Println()
-	fmt.Println("  Select accounts file (email:password, one per line)")
+	fmt.Println("  Select accounts file(s) (email:password, one per line)")
+	fmt.Println("  Tip: Ctrl+click to select multiple files in the picker")
 	fmt.Println("  Opening file picker...")
 	fmt.Println()
 
-	accountsPath, err = pickAccountsFileWindows("Select accounts file (email:password)")
+	accountsPaths, err = pickAccountsFilesWindows("Select accounts file(s) — Ctrl+click for multiple")
 	if err != nil {
 		fmt.Println("  File picker cancelled or unavailable.")
-		fmt.Println("  Type full path to accounts .txt file:")
-		accountsPath = readLine("  Accounts file: ")
+		fmt.Println("  Type full path(s), comma-separated:")
+		raw := readLine("  Accounts file(s): ")
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.Trim(strings.TrimSpace(part), `"`)
+			if part != "" {
+				accountsPaths = append(accountsPaths, part)
+			}
+		}
 	}
-	if accountsPath == "" {
-		return "", "", "", 0, "", fmt.Errorf("no accounts file selected")
+	if len(accountsPaths) == 0 {
+		return "", nil, "", 0, "", fmt.Errorf("no accounts file selected")
 	}
 
-	accountsPath = strings.Trim(accountsPath, `"`)
-	if _, statErr := os.Stat(accountsPath); statErr != nil {
-		return "", "", "", 0, "", fmt.Errorf("accounts file not found: %s", accountsPath)
+	for i, p := range accountsPaths {
+		accountsPaths[i] = strings.Trim(p, `"`)
+		if _, statErr := os.Stat(accountsPaths[i]); statErr != nil {
+			return "", nil, "", 0, "", fmt.Errorf("accounts file not found: %s", accountsPaths[i])
+		}
+	}
+	if len(accountsPaths) == 1 {
+		fmt.Printf("  Selected: %s\n", accountsPaths[0])
+	} else {
+		fmt.Printf("  Selected %d files:\n", len(accountsPaths))
+		for _, p := range accountsPaths {
+			fmt.Printf("    - %s\n", p)
+		}
 	}
 
 	fmt.Println()
@@ -236,13 +280,13 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 		}
 		proxyPath = strings.Trim(proxyPath, `"`)
 		if proxyPath == "" {
-			return "", "", "", 0, "", fmt.Errorf("no proxy file selected")
+			return "", nil, "", 0, "", fmt.Errorf("no proxy file selected")
 		}
 		if _, statErr := os.Stat(proxyPath); statErr != nil {
-			return "", "", "", 0, "", fmt.Errorf("proxy file not found: %s", proxyPath)
+			return "", nil, "", 0, "", fmt.Errorf("proxy file not found: %s", proxyPath)
 		}
 		if pool, loadErr := LoadProxyPool(proxyPath); loadErr != nil {
-			return "", "", "", 0, "", loadErr
+			return "", nil, "", 0, "", loadErr
 		} else {
 			fmt.Printf("  Loaded %d proxy entries\n", pool.Len())
 			w = pool.SuggestedWorkers()
@@ -265,5 +309,5 @@ func runInteractive() (configPath, accountsPath, resultsDir string, workers int,
 	}
 
 	fmt.Println()
-	return configPath, accountsPath, resultsDir, w, proxyPath, nil
+	return configPath, accountsPaths, resultsDir, w, proxyPath, nil
 }
