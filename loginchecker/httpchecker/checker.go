@@ -127,6 +127,8 @@ func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
 		return c.checkSemrush(email, password, proxyURL)
 	case "noxtools":
 		return c.checkNoxtools(email, password, proxyURL)
+	case "gfxtoolz":
+		return c.checkGfxtoolz(email, password, proxyURL)
 	default:
 		return c.checkBuzzsumo(email, password, proxyURL)
 	}

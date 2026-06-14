@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -42,6 +43,7 @@ func listConfigFiles(baseDir string) ([]string, error) {
 		}
 		files = append(files, filepath.Join(configDir, e.Name()))
 	}
+	sort.Strings(files)
 	return files, nil
 }
 
