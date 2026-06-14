@@ -25,6 +25,7 @@ const (
 	StatusError          CheckStatus = "ERROR"
 	StatusRateLimited    CheckStatus = "RATE_LIMITED"
 	StatusVerifyRequired CheckStatus = "VERIFY_REQUIRED"
+	StatusRecaptchaRequired CheckStatus = "RECAPTCHA_REQUIRED"
 )
 
 type CheckResult struct {
@@ -614,6 +615,9 @@ func writeResultFiles(cfg *Config, r CheckResult, resultsDir string) error {
 				r.PlanName, r.PlanID, r.StripePlanID, r.PlanLabel)
 		}
 		return appendLine(filepath.Join(resultsDir, "inactive_plan.txt"), line)
+	case StatusRecaptchaRequired:
+		line := fmt.Sprintf("%s:%s | reCAPTCHA required (Semrush bot protection)", r.Email, r.Password)
+		return appendLine(filepath.Join(resultsDir, "recaptcha_required.txt"), line)
 	}
 	return nil
 }

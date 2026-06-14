@@ -39,6 +39,7 @@ HIT           : %d  (valid login — see hits.txt)
 FAIL          : %d  (wrong password — see invalid.txt)
 FB VERIFY     : %d  (login ok but Facebook verify — see facebook_verify.txt)
 INACTIVE      : %d  (paid label but no billing/legacy — see inactive_plan.txt)
+CAPTCHA       : %d  (reCAPTCHA wall — see recaptcha_required.txt)
 RATE LIMITED  : %d  (HTTP 429 — retry rate_limited.txt with 3 workers)
 ERROR         : %d  (network/other — see errors.txt)
 
@@ -66,6 +67,7 @@ errors.txt    other failures
 		stats.Fails,
 		stats.VerifySkip,
 		stats.InactiveSkip,
+		stats.CaptchaSkip,
 		stats.RateLimited,
 		stats.Errors,
 	)
@@ -78,6 +80,7 @@ type RunStats struct {
 	Fails        int64
 	VerifySkip   int64
 	InactiveSkip int64
+	CaptchaSkip  int64
 	RateLimited  int64
 	Errors       int64
 }

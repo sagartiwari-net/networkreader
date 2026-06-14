@@ -75,7 +75,7 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 
 	jobs := make(chan Account, w*2)
 	var wg sync.WaitGroup
-	var hitCount, failCount, errCount, rateCount, verifyCount, inactiveCount atomic.Int64
+	var hitCount, failCount, errCount, rateCount, verifyCount, inactiveCount, captchaCount atomic.Int64
 	var fileMu sync.Mutex
 	start := time.Now()
 	delay := time.Duration(cfg.Settings.DelayMS) * time.Millisecond
@@ -148,6 +148,12 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 					fileMu.Lock()
 					_ = writeResultFiles(cfg, res, resultsDir)
 					fileMu.Unlock()
+				case StatusRecaptchaRequired:
+					captchaCount.Add(1)
+					fmt.Printf("[CAPTCHA] %s | %s\n", acc.Email, res.Reason)
+					fileMu.Lock()
+					_ = writeResultFiles(cfg, res, resultsDir)
+					fileMu.Unlock()
 				default:
 					errCount.Add(1)
 					fmt.Printf("[ERROR] %s | %s\n", acc.Email, res.Reason)
@@ -173,14 +179,15 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 		RateLimited: rateCount.Load(),
 		VerifySkip:  verifyCount.Load(),
 		InactiveSkip: inactiveCount.Load(),
+		CaptchaSkip:  captchaCount.Load(),
 		Errors:      errCount.Load(),
 	}
 
 	_ = writeRunSummary(filepath.Join(resultsDir, "summary.txt"), cfg, opts, stats, elapsed)
 
 	fmt.Println("------------------------------------------------------------")
-	fmt.Printf("Done in %s | HIT=%d FAIL=%d FB=%d INACTIVE=%d RATE=%d ERROR=%d\n",
-		elapsed, stats.Hits, stats.Fails, stats.VerifySkip, stats.InactiveSkip, stats.RateLimited, stats.Errors)
+	fmt.Printf("Done in %s | HIT=%d FAIL=%d FB=%d INACTIVE=%d CAPTCHA=%d RATE=%d ERROR=%d\n",
+		elapsed, stats.Hits, stats.Fails, stats.VerifySkip, stats.InactiveSkip, stats.CaptchaSkip, stats.RateLimited, stats.Errors)
 	fmt.Printf("Results folder:\n  %s\n", filepath.Clean(resultsDir))
 	fmt.Println("  summary.txt      — full run stats")
 	fmt.Println("  hits.txt           — valid logins + active plan")

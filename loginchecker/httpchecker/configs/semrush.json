@@ -153,7 +153,9 @@
     "user_agent_hash is FingerprintJS visitorId — update from browser DevTools if checks fail with ERROR_UAHASH_INVALID.",
     "Capture was stopped before login response + subscription API — run ONF again: login successfully, open Profile → Subscription Info, then stop capture.",
     "Update account_query_url once subscription XHR is found in network.ndjson.",
-    "Semrush uses _sm_bot cookies + optional reCAPTCHA — use 3-5 workers without proxy first.",
+    "Semrush uses FingerprintJS user_agent_hash + _sm_bot cookies — pure HTTP cannot fully bypass reCAPTCHA on bulk checks.",
+    "HTTP 201 on /sso/authorize = success. reCAPTCHA hits go to recaptcha_required.txt.",
+    "For fewer captchas: 1 worker, unique residential IP per login, update user_agent_hash from browser.",
     "Do NOT commit real user_agent_hash tied to your browser session in public repos."
   ]
 }

