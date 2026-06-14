@@ -60,7 +60,7 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 
 	jobs := make(chan Account, w*2)
 	var wg sync.WaitGroup
-	var hitCount, failCount, errCount, rateCount atomic.Int64
+	var hitCount, failCount, errCount, rateCount, verifyCount atomic.Int64
 	var fileMu sync.Mutex
 	start := time.Now()
 	delay := time.Duration(cfg.Settings.DelayMS) * time.Millisecond
@@ -93,6 +93,16 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 					fileMu.Lock()
 					_ = writeResultFiles(cfg, res, resultsDir)
 					fileMu.Unlock()
+				case StatusVerifyRequired:
+					verifyCount.Add(1)
+					fmt.Printf("[SKIP] %s | Facebook verification required", acc.Email)
+					if res.PlanName != "" {
+						fmt.Printf(" (Plan=%s)", res.PlanName)
+					}
+					fmt.Println()
+					fileMu.Lock()
+					_ = writeResultFiles(cfg, res, resultsDir)
+					fileMu.Unlock()
 				default:
 					errCount.Add(1)
 					fmt.Printf("[ERROR] %s | %s\n", acc.Email, res.Reason)
@@ -116,19 +126,21 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 		Hits:        hitCount.Load(),
 		Fails:       failCount.Load(),
 		RateLimited: rateCount.Load(),
+		VerifySkip:  verifyCount.Load(),
 		Errors:      errCount.Load(),
 	}
 
 	_ = writeRunSummary(filepath.Join(resultsDir, "summary.txt"), cfg, opts, stats, elapsed)
 
 	fmt.Println("------------------------------------------------------------")
-	fmt.Printf("Done in %s | HIT=%d FAIL=%d RATE=%d ERROR=%d\n",
-		elapsed, stats.Hits, stats.Fails, stats.RateLimited, stats.Errors)
+	fmt.Printf("Done in %s | HIT=%d FAIL=%d SKIP=%d RATE=%d ERROR=%d\n",
+		elapsed, stats.Hits, stats.Fails, stats.VerifySkip, stats.RateLimited, stats.Errors)
 	fmt.Printf("Results folder:\n  %s\n", filepath.Clean(resultsDir))
 	fmt.Println("  summary.txt      — full run stats")
 	fmt.Println("  hits.txt           — valid logins + active plan")
 	fmt.Println("  by_plan/           — PRO, FREE_TRIAL, PAID...")
 	fmt.Println("  paid.txt / free_trial.txt")
+	fmt.Println("  facebook_verify.txt — login ok but Facebook verify wall")
 	fmt.Println("  invalid.txt        — wrong password")
 	fmt.Println("  rate_limited.txt   — HTTP 429 (retry with 3 workers)")
 	fmt.Println("  errors.txt         — other errors")

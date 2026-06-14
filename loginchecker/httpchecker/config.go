@@ -116,3 +116,10 @@ func (c *Config) SegmentTraitsURL() string {
 	}
 	return c.BaseURL() + "/users/segment-traits"
 }
+
+func (c *Config) VerifyURL() string {
+	if v := c.Variables["verify_url"]; v != "" {
+		return v
+	}
+	return c.BaseURL() + "/verify"
+}

