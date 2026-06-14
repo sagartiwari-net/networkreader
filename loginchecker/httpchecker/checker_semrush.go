@@ -235,6 +235,15 @@ func semrushResponseNeedsRecaptcha(body string) bool {
 	if strings.Contains(lower, `"captcha"`) && strings.Contains(lower, `"required":true`) {
 		return true
 	}
+	if msg, ok := jsonPathString(body, "message"); ok {
+		msgLower := strings.ToLower(msg)
+		if strings.Contains(msgLower, "recaptcha") && strings.Contains(msgLower, "required") {
+			return true
+		}
+	}
+	if strings.Contains(lower, "recaptcha is required") {
+		return true
+	}
 	return false
 }
 
@@ -274,6 +283,9 @@ func parseSemrushAuthFailure(body string, status int) string {
 		return "invalid email or password"
 	}
 	if status == http.StatusBadRequest {
+		if semrushResponseNeedsRecaptcha(body) {
+			return "recaptcha_required"
+		}
 		if msg, ok := jsonPathString(body, "message"); ok && msg != "" {
 			return msg
 		}
