@@ -92,7 +92,12 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 		if delay <= 0 {
 			delay = 150 * time.Millisecond
 		}
-		fmt.Printf("  Proxy cap : max %d concurrent logins\n", maxInflight)
+		// Many sticky sessions: lower per-worker delay for throughput.
+		if proxyPool.Len() >= 20 && delay > 150*time.Millisecond {
+			delay = 150 * time.Millisecond
+		}
+		fmt.Printf("  Proxy cap : max %d concurrent (1 per sticky session)\n", maxInflight)
+		fmt.Printf("  Tip       : use %d workers with %d proxies for max speed\n", proxyPool.SuggestedWorkers(), proxyPool.Len())
 	}
 
 	for i := 0; i < w; i++ {
@@ -205,20 +210,38 @@ func runChecker(opts RunOptions) (RunStats, time.Duration, error) {
 
 func checkAccountWithRetry(checker *Checker, acc Account, proxyPool *ProxyPool, cfg *Config) CheckResult {
 	maxAttempts := 1
-	if proxyPool != nil && cfg.Settings.RetryOnError > 0 {
+	if proxyPool != nil {
 		maxAttempts = cfg.Settings.RetryOnError + 1
+		if maxAttempts < 5 {
+			maxAttempts = 5
+		}
+		cap := proxyPool.Len()
+		if cap > maxAttempts {
+			maxAttempts = cap
+		}
+		if maxAttempts > 12 {
+			maxAttempts = 12
+		}
 	}
 	var res CheckResult
+	var lastProxy *url.URL
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		var proxy *url.URL
 		if proxyPool != nil {
-			proxy = proxyPool.Next()
+			proxy = proxyPool.NextAvailable()
+			lastProxy = proxy
 		}
 		res = checker.Check(acc.Email, acc.Password, proxy)
+		if res.Status == StatusRateLimited && proxyPool != nil && lastProxy != nil {
+			proxyPool.MarkCooldown(lastProxy, cooldownForRateReason(res.Reason))
+		}
 		if !isRetryableCheckResult(res) || attempt+1 >= maxAttempts {
 			break
 		}
-		time.Sleep(time.Duration(400*(attempt+1)) * time.Millisecond)
+		// Rate-limited on one IP — immediately rotate to next available proxy.
+		if res.Status != StatusRateLimited {
+			time.Sleep(time.Duration(300*(attempt+1)) * time.Millisecond)
+		}
 	}
 	return res
 }

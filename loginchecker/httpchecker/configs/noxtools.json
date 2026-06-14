@@ -4,10 +4,10 @@
   "description": "aMember login at /secure/login — login_attempt_id scraped fresh from each GET",
   "source_capture": "task_20260613_233526",
   "settings": {
-    "workers": 5,
+    "workers": 20,
     "timeout_seconds": 45,
-    "retry_on_error": 3,
-    "delay_ms": 500
+    "retry_on_error": 5,
+    "delay_ms": 150
   },
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
   "variables": {

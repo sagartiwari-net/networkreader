@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/url"
 	"testing"
 	"time"
 )
@@ -34,6 +35,26 @@ func TestParseProxyLinePasswordWithColons(t *testing.T) {
 	pass, _ := u.User.Password()
 	if pass != "secret:extra:bit" {
 		t.Fatalf("pass = %q", pass)
+	}
+}
+
+func TestParseWaitSeconds(t *testing.T) {
+	if sec := parseWaitSeconds("Please wait 79 seconds before next login attempt"); sec != 79 {
+		t.Fatalf("got %d", sec)
+	}
+	if d := cooldownForRateReason("Please wait 60 seconds before next login attempt"); d < 60*time.Second {
+		t.Fatalf("cooldown too short: %v", d)
+	}
+}
+
+func TestProxyPoolMaxInflight(t *testing.T) {
+	pool := &ProxyPool{proxies: make([]*url.URL, 50)}
+	if pool.MaxInflight() != 50 {
+		t.Fatalf("got %d", pool.MaxInflight())
+	}
+	pool2 := &ProxyPool{proxies: make([]*url.URL, 1)}
+	if pool2.MaxInflight() != 12 {
+		t.Fatalf("got %d", pool2.MaxInflight())
 	}
 }
 

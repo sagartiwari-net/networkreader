@@ -5,13 +5,18 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
+var waitSecondsRE = regexp.MustCompile(`(?i)wait\s+(\d+)\s+seconds?`)
+
 type ProxyPool struct {
-	proxies []*url.URL
-	idx     atomic.Uint64
+	proxies       []*url.URL
+	idx           atomic.Uint64
+	cooldownUntil []atomic.Int64 // unix nanos; 0 = ready
 }
 
 func LoadProxyPool(path string) (*ProxyPool, error) {
@@ -42,7 +47,8 @@ func LoadProxyPool(path string) (*ProxyPool, error) {
 	if len(proxies) == 0 {
 		return nil, fmt.Errorf("no proxies found in %s", path)
 	}
-	return &ProxyPool{proxies: proxies}, nil
+	pool := &ProxyPool{proxies: proxies, cooldownUntil: make([]atomic.Int64, len(proxies))}
+	return pool, nil
 }
 
 func ParseProxyLine(line string) (*url.URL, error) {
@@ -95,11 +101,91 @@ func ParseProxyLine(line string) (*url.URL, error) {
 }
 
 func (p *ProxyPool) Next() *url.URL {
+	return p.NextAvailable()
+}
+
+// NextAvailable returns the next proxy not in cooldown (or the soonest-ready one).
+func (p *ProxyPool) NextAvailable() *url.URL {
 	if p == nil || len(p.proxies) == 0 {
 		return nil
 	}
-	i := p.idx.Add(1) - 1
-	return p.proxies[i%uint64(len(p.proxies))]
+	n := len(p.proxies)
+	now := time.Now().UnixNano()
+	start := int(p.idx.Add(1)-1) % n
+	bestIdx := -1
+	var bestUntil int64
+	for i := 0; i < n; i++ {
+		idx := (start + i) % n
+		until := p.cooldownUntil[idx].Load()
+		if until <= now {
+			return p.proxies[idx]
+		}
+		if bestIdx < 0 || until < bestUntil {
+			bestIdx = idx
+			bestUntil = until
+		}
+	}
+	return p.proxies[bestIdx]
+}
+
+func (p *ProxyPool) MarkCooldown(u *url.URL, d time.Duration) {
+	if p == nil || u == nil || d <= 0 {
+		return
+	}
+	idx := p.indexOf(u)
+	if idx < 0 {
+		return
+	}
+	until := time.Now().Add(d).UnixNano()
+	for {
+		cur := p.cooldownUntil[idx].Load()
+		if cur >= until {
+			return
+		}
+		if p.cooldownUntil[idx].CompareAndSwap(cur, until) {
+			return
+		}
+	}
+}
+
+func (p *ProxyPool) indexOf(u *url.URL) int {
+	for i, pr := range p.proxies {
+		if proxyEqual(pr, u) {
+			return i
+		}
+	}
+	return -1
+}
+
+func proxyEqual(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	ap, _ := a.User.Password()
+	bp, _ := b.User.Password()
+	return a.Host == b.Host && ap == bp
+}
+
+func parseWaitSeconds(reason string) int {
+	m := waitSecondsRE.FindStringSubmatch(reason)
+	if len(m) < 2 {
+		return 0
+	}
+	n := 0
+	for _, c := range m[1] {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+func cooldownForRateReason(reason string) time.Duration {
+	if sec := parseWaitSeconds(reason); sec > 0 {
+		return time.Duration(sec)*time.Second + 3*time.Second
+	}
+	return 90 * time.Second
 }
 
 func (p *ProxyPool) Len() int {
@@ -109,6 +195,7 @@ func (p *ProxyPool) Len() int {
 	return len(p.proxies)
 }
 
+// MaxInflight — one concurrent login per sticky session (avoids same-IP rate limits).
 func (p *ProxyPool) MaxInflight() int {
 	if p == nil || len(p.proxies) == 0 {
 		return 0
@@ -116,14 +203,15 @@ func (p *ProxyPool) MaxInflight() int {
 	if len(p.proxies) == 1 {
 		return 12
 	}
-	n := len(p.proxies) * 4
-	if n > 30 {
-		n = 30
-	}
-	if n < 12 {
-		n = 12
+	n := len(p.proxies)
+	if n > 50 {
+		n = 50
 	}
 	return n
+}
+
+func (p *ProxyPool) SuggestedWorkers() int {
+	return p.MaxInflight()
 }
 
 func proxyDisplay(u *url.URL) string {
