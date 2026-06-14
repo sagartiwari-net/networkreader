@@ -27,7 +27,9 @@
     "toolkits_summary_url": "https://www.semrush.com/accounts/subscription-info/api/v1/toolkits/summary/",
     "user_info_url": "https://www.semrush.com/accounts/user-info",
     "sso_version": "4.4.1",
-    "user_agent_hash": "8109d0ebea1d682bbe7bc3ab7242c807"
+    "user_agent_hash": "8109d0ebea1d682bbe7bc3ab7242c807",
+    "recaptcha_site_key": "6Ldw6DYUAAAAACFCNmvsT32P6VPVonpjbSS7XTA9",
+    "twocaptcha_api_key": ""
   },
   "steps": [
     {
@@ -184,7 +186,7 @@
     "user_agent_hash is FingerprintJS visitorId — update from browser DevTools if checks fail with ERROR_UAHASH_INVALID.",
     "Plan API from capture: GET /accounts/subscription-info/api/v1/header/ → subscription.title (Free/Pro/Guru/Business).",
     "Fallback: GET /accounts/subscription-info/api/v1/toolkits/summary/ → tiers with is_purchased=true.",
-    "Semrush uses FingerprintJS user_agent_hash + _sm_bot cookies — pure HTTP cannot fully bypass reCAPTCHA on bulk checks.",
+    "Semrush requires reCAPTCHA Enterprise on /sso/authorize — set twocaptcha_api_key in variables (or TWOCAPTCHA_API_KEY env).",
     "HTTP 201 on /sso/authorize = success. reCAPTCHA hits go to recaptcha_required.txt.",
     "For fewer captchas: 1 worker, unique residential IP per login, update user_agent_hash from browser.",
     "Do NOT commit real user_agent_hash tied to your browser session in public repos."
