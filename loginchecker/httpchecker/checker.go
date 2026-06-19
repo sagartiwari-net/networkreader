@@ -135,6 +135,8 @@ func (c *Checker) Check(email, password string, proxyURL *url.URL) CheckResult {
 		return c.checkHindseo(email, password, proxyURL)
 	case "prideseotools":
 		return c.checkPrideSeoTools(email, password, proxyURL)
+	case "spinrewriter":
+		return c.checkSpinrewriter(email, password, proxyURL)
 	default:
 		return c.checkBuzzsumo(email, password, proxyURL)
 	}

